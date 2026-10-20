@@ -1,0 +1,11 @@
+import { spawn } from 'node:child_process';
+import { mkdirSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
+const configDir=resolve(root,'.local/config');
+mkdirSync(configDir,{recursive:true});mkdirSync(resolve(root,'.local/logs'),{recursive:true});
+const child=spawn(process.execPath,[resolve(root,'node_modules/wrangler/bin/wrangler.js'),...process.argv.slice(2)],{cwd:root,stdio:'inherit',env:{...process.env,XDG_CONFIG_HOME:configDir,WRANGLER_LOG_PATH:resolve(root,'.local/logs/wrangler.log'),WRANGLER_SEND_METRICS:'false'}});
+for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>child.kill(signal));
+child.on('error',error=>{console.error(error.message);process.exit(1);});
+child.on('exit',(code)=>process.exit(code??1));

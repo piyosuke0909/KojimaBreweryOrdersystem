@@ -1,0 +1,118 @@
+# 小島醸造 法人受注システム v2
+
+GAS・Google Sheetsから、TypeScript / Hono / Cloudflare Workers / D1（SQLite）/ Drizzle / React / Vite / Tailwind CSS へ再構築したシステムです。添付設計書は `docs/design/` に保存しています。
+
+## 開発環境
+
+Node.js 22以上（検証環境24）、npmを使用します。このタスクはすでに隔離されているため、既存チェックアウトを使い、追加のGit worktreeは作成しません。
+
+```bash
+cd /workspace/KojimaBreweryOrdersystem
+npm ci --cache /workspace/.npm-cache
+npm run setup
+npm run build
+npm run dev
+```
+
+`setup` はローカル用のランダム署名キー・初期管理者パスワードを `.dev.vars` に生成し、D1ローカルDBへマイグレーションと架空データを投入します。既存ファイルと既存データは上書きしません。Wranglerの設定・ログは書込み可能な `.local/` に保存します。
+
+フロントエンドは5173番、APIは8787番で動作します。管理画面は `/admin`、取引先画面は `/order`、履歴は `/orders`、商品紹介は `/products` です。`npm run build` 後は8787番からビルド済み画面も配信します。
+
+開発環境のログイン画面には、明示的なデモログインボタンがあります。デモ認証は `APP_ENV=development`、`ALLOW_DEMO_AUTH=true`、ループバックホストの3条件でのみ動作し、本番設定では無効です。通常の初期ログインIDは `admin`。パスワードはローカルの `.dev.vars` にあり、チャットやログへ出力しないでください。初回ログイン時にPBKDF2ハッシュを保存します。
+
+架空の取引先5社・注文、設計書の商品11種類を登録しています。A酒店の侍の酒300mlは2,100円、Bホテルは2,300円です。商品重量・梱包寸法・送料・連絡先は検証用です。`seeds/demo.sql` を本番DBへ投入しないでください。
+
+## 実装機能
+
+- 管理画面：ダッシュボード、注文検索・編集・進捗・取消、取引先・配送先・契約・単価履歴、商品、招待QRとLINE利用者、配送カレンダー、箱・サイズ・運賃、請求発行・入金・取消・再発行・旧版閲覧、監査、会社・税・帳票設定。
+- 取引先画面：LINE認証・QR登録、企業別商品と単価、配送先、カートと送料見積、到着希望日、確認・注文確定、注文履歴・編集・取消、商品紹介、お問い合わせ。
+- D1：26テーブル、索引・外部キー・チェック制約。主要業務更新と監査記録は同じアトミックバッチ内で保存。
+- 注文：UUID冪等性、企業境界、初回単価保持（削除後の再追加も履歴から復元）、10分編集ロック、バージョン競合検知、3営業日前17時（日本時間）の顧客変更期限、請求ロック。
+- 梱包：容量・混載・本数・箱重量、三辺と重量の双方からサイズを判定し、配送先の適用運賃を計算。料金未設定時はエラーとし、0円扱いにしません。
+- 帳票：A4プレビュー・印刷・日本語PDF直接ダウンロード。PDFライブラリと日本語フォントは必要時に読み込みます。請求書旧版はD1の不変スナップショットから再出力し、R2やDriveは使いません。
+- LINEリッチメニュー：設定画面から紺と金の4分割メニューを確認・反映できます。オーナー権限と小島醸造の公式アカウントを確認し、登録済みのWorkersシークレットで画像・4つのLIFFリンク・標準メニューを設定します。手順は [LINE設定手順](docs/LINE設定手順.md) を参照してください。
+
+## 検証
+
+APIサーバーを起動した状態で実行します。E2E・HTTPテストは専用のテスト用取引先・注文をローカルDBに作成し、主要なマスタ変更は復元します。本番には実行しないでください。
+
+```bash
+npm run typecheck
+npm test
+npm run build
+npm run test:integration
+npm run test:e2e
+node scripts/smoke.mjs
+```
+
+E2Eは既存の `/usr/bin/chromium` を優先します。別の環境で未導入なら `npx playwright install chromium` を実行してください。`PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` で既存ブラウザも指定できます。API待ち・DB確認と画面操作で検証しており、ポートの存在だけを稼働確認には使いません。
+
+単体テストは税・営業日・サイズ/梱包・認証、HTTPテストは認可・企業分離・冪等性・単価維持・編集競合・請求履歴、E2Eは実ブラウザでの管理画面・スマホ注文・編集・取消・PDFを確認します。最新の実行結果・制限は `docs/implementation-status.md` を参照してください。
+
+## 本番構築
+
+CloudflareとLINEの認証情報・正式な運賃等はこのリポジトリに含みません。管理者がマスタを整えるための初期公開と、LINEから実際に注文を受け付ける公開を分けて進めます。トークンやシークレットはチャットへ貼らず、安全な実行環境とCloudflareのシークレット管理に登録してください。
+
+1. ユーザー本人の既存アカウント内に、この再構築用のWorkers・D1・LINEチャネルを新規作成する方針です。アカウントそのものは新規作成しません。Cloudflare APIトークンを環境設定で安全に登録した後、`npm run cloudflare:provision`（Node.js 24）でアカウントと新規リソースの計画を確認し、`npm run cloudflare:provision -- --apply` で専用D1作成と本番binding設定を行います。複数アカウントがある場合だけ `CLOUDFLARE_ACCOUNT_ID` が必要です。このコマンドは既存DBを消去せず、アプリ公開も行いません。Workersは設定した新しい名前で後続のdeploy時に作成されます。
+2. `npm run db:migrate:remote` で本番DBを作成し、`node scripts/wrangler.mjs d1 execute DB --remote --env production --file seeds/production.sql` で正式データ登録前の初期設定だけを投入します。商品重量が未提供のため、商品は注文不可で初期化します。実測重量、販売状態、価格を管理画面で登録してから販売してください。
+3. `APP_ENV=production`、`ALLOW_DEMO_AUTH=false` を維持し、次の管理者向け初期公開またはLINE注文の公開へ進みます。実施済みの作業と検証結果は `docs/implementation-status.md` を参照してください。
+
+### 管理者向けの初期公開
+
+LINEチャネルをまだ作成できない場合も、管理者ポータル `/admin` を公開して、会社情報・取引先・商品・配送条件を登録できます。新しい本番DBへのマイグレーションと `seeds/production.sql` の投入を済ませ、ローカルAPIを起動した状態で型検査・テスト・ビルドを実行してください。`deploy:admin` 自体はこれらの検査やビルドを実行しません。
+
+```bash
+npm run typecheck
+npm test
+npm run build
+npm run deploy:check -- --admin-only
+npm run deploy:admin
+```
+
+`deploy:admin` はNode.js 24を使用し、実行環境の `CLOUDFLARE_API_TOKEN` で認証します。専用のランダムなセッション署名キーと初期管理者パスワードを別々に生成し、OSのパイプ経由でWorkersシークレットへ登録して公開します。Cloudflare APIトークンや署名キーをファイルへ保存しません。管理者ID・パスワードと配置先情報は、Git対象外の `.local/production-admin-credentials.json` に所有者だけが読み書きできる権限（0600）で保存します。このファイルは機密情報として安全に管理者へ引き渡してください。
+
+初回の `admin` ログインで管理者のパスワードハッシュをDBへ保存します。ログイン成功後は `ADMIN_BOOTSTRAP_PASSWORD` シークレットを削除できます。`deploy:admin` の再実行は同じDBに対応する保存済みパスワードを使いますが、セッション署名キーを再生成するため、利用中の全セッションが無効になります。初期管理者作成後に認証情報ファイルを削除して再実行しても、DBの既存パスワードは更新されません。
+
+LINE設定前の通常のコード更新では、型検査・テスト・ビルドと `npm run deploy:check -- --admin-only` を済ませてから、`node scripts/wrangler.mjs deploy --env production` で既存シークレットを維持して更新します。初期設定用の `deploy:admin` を通常の更新には使いません。
+
+`--admin-only` は初期公開用の設定検査です。LINE未設定の段階ではLINEログイン・取引先登録・顧客注文を利用できません。商品紹介やお問い合わせのページは引き続き公開されるため、管理画面だけにアクセスを制限する機能ではありません。初期商品はすべて注文不可、お問い合わせ先は空欄です。正式な連絡先・会社情報・口座、実測重量・販売価格、配送ルール・カレンダー・梱包寸法・運賃を管理画面で登録し、注文受付の準備を進めてください。
+
+公開後は `/api/health` のDB接続、本番設定とデモ無効、未認証での管理API拒否、管理者ログイン・ログアウト、設定と商品一覧の表示を確認します。ローカル用の統合テスト・E2Eは本番DBに実行しないでください。
+
+### LINE注文の公開
+
+下表のシークレットと公開変数を設定し、正式マスタとバックアップ方針を確認します。既存のセッション署名キーと管理者パスワードは維持してください。`LIFF_ID` と `LINE_CHANNEL_ID` を設定した後、ローカルAPIを起動した状態で `npm run deploy` を実行します。この通常の公開コマンドはLINE設定を必須として検査し、型検査・テスト・ビルド後にWorkersを更新します。
+
+|設定名|設定場所・用途|
+|---|---|
+|`SESSION_SECRET`|`wrangler secret put SESSION_SECRET --env production`。32文字以上のランダム署名キー|
+|`ADMIN_BOOTSTRAP_PASSWORD`|同様にシークレット。最初の `admin` ログイン用の十分長いパスワード。初回管理者作成後に削除可能|
+|`LIFF_ID`|本番vars。LIFFアプリのID|
+|`LINE_CHANNEL_ID`|本番vars。LINE LoginチャネルID（Messaging APIチャネルIDと混同しない）|
+|`LINE_MESSAGING_CHANNEL_ID`|本番vars。Messaging APIチャネルID。登録済みシークレットからのトークン自動取得に使用|
+|`LINE_CHANNEL_SECRET`|シークレット。Messaging API WebhookのHMAC検証と、LINE公式APIによる短時間トークンの自動取得|
+|`LINE_CHANNEL_ACCESS_TOKEN`|任意シークレット。自動取得の構成がない場合に使う従来のMessaging API認証|
+|`NOTIFICATION_EMAIL_API_KEY`|任意シークレット。Resend API認証。未設定ならメール通知無効|
+|`NOTIFICATION_FROM`|任意vars。Resendで検証済みの送信元アドレス|
+
+`CLOUDFLARE_API_TOKEN` と `CLOUDFLARE_ACCOUNT_ID` はデプロイを行う実行環境にだけ登録します。ローカルAPIへの注入は不要です。パスワードやHMAC秘密鍵は、送信先限定のプロキシ置換トークンではなく、Workersが実際に読めるシークレットとして設定します。
+
+本番は `LINE_MESSAGING_CHANNEL_ID` と `LINE_CHANNEL_SECRET` からLINE公式の `/oauth2/v3/token` を呼び、15分有効のステートレストークンをサーバー内部で自動取得します。期限前に更新し、同時取得をまとめます。取得したトークンはプロセスのメモリーにのみ保持し、画面・APIレスポンス・DB・ログへ保存しません。通知とリッチメニューは同じ取得処理を使うため、長期トークンの手動貼り付けは不要です。
+
+LINE Developersでは同一Provider配下のLINE LoginとMessaging APIチャネルを関連付け、LIFFに `openid` / `profile` スコープと本番のエンドポイントURLを登録します。LINE Loginの友だち追加オプションを有効にします。Webhook URLは公開先の `/api/line/webhook`。リッチメニューは `/order` `/orders` `/contact` `/products` を開く4導線です。サーバーはLINE公式APIで本人確認し、クライアントから渡された利用者IDや企業IDを信用しません。
+
+LINE本人確認はIDトークンを優先し、取得できない場合はLIFFアクセストークンのLoginチャネル・期限・権限を検証して本人IDを取得します。企業は招待QRから決定し、古いアカウントの企業表示による誤遷移を防ぎます。登録途中でエラーになった場合は、有効な同じ招待QRからやり直せます。同じ企業に登録済みなら重複登録せず注文画面へ進みます。詳細は [LINE認証・企業紐づけ](docs/LINE認証・企業紐づけ.md) を参照してください。
+
+同じ招待QRから複数のLINEアカウントを企業の担当者として追加できます。人数上限・別企業への誤登録防止・同時登録・ブラウザーのアカウント切替の検証結果は [複数LINEアカウント検証](docs/複数LINEアカウント検証.md) を参照してください。
+
+招待URLは発行直後にしか復元できません。QR案内状をその時点で保存してください。DB・監査ログにはトークンのSHA-256ハッシュだけを保存します。GAS時代のデータ移行用元データは未提供のため、旧データの取込みは未実行です。
+
+管理者認証にはHttpOnly、SameSite=Strict、HTTPS時Secureの署名Cookieを使い、毎回有効なアカウントを照会します。公開時にはCloudflareのレート制限もログイン経路に適用してください（アプリ内の短期試行制限はisolateごとのため、エッジ全体の制限を代替しません）。
+
+## 運用上の区別
+
+ローカルで動作確認済みのシステムと、Cloudflare上の本番稼働・実LINE送受信・外部通知は別です。認証情報未設定のため、外部通知と実機LINEの疎通は未検証です。通知処理は応答を待たせずバックグラウンドで実行し、送信・未設定・失敗を監査に記録します。永続キューによる自動再送は未実装なので、失敗時は監査を確認して別途対応してください。
+
+価格改定・会社情報変更は過去の注文/請求書スナップショットを変更しません。本番D1はCloudflareのバックアップ/Time Travel方針に沿って保護してください。Gitへの登録、Cloudflare環境の公開、新しいクラウドタスクでの復元はそれぞれ別の操作です。最新の実施状況は `docs/implementation-status.md` を参照してください。
+
+Drizzleスキーマと初期SQLを同時に定義しています。初期の生成metadataは持たないため、`db:generate` の初回出力を初期マイグレーションと重複適用しないでください。次のスキーマ変更時に既存DBとの差分をレビューして、追加マイグレーションとして保存します。

@@ -1,0 +1,55 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "kojima-brewery-orders",
+  "main": "src/server/index.ts",
+  "compatibility_date": "2026-10-19",
+  "assets": {
+    "directory": "./dist/client",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": [
+      "/api/*"
+    ]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "kojima-brewery-local",
+      "database_id": "00000000-0000-0000-0000-000000000001",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "vars": {
+    "APP_ENV": "development",
+    "ALLOW_DEMO_AUTH": "true"
+  },
+  "env": {
+    "production": {
+      "name": "kojima-brewery-v2-a6577637",
+      "vars": {
+        "APP_ENV": "production",
+        "ALLOW_DEMO_AUTH": "false",
+        "LIFF_ID": "2012094093-ApA0tjfW",
+        "LINE_CHANNEL_ID": "2012094093",
+        "LINE_MESSAGING_CHANNEL_ID": "2011903727"
+      },
+      "assets": {
+        "directory": "./dist/client",
+        "binding": "ASSETS",
+        "not_found_handling": "single-page-application",
+        "run_worker_first": [
+          "/api/*"
+        ]
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "kojima-brewery-v2-a6577637",
+          "database_id": "94b5028a-8be1-413b-9f33-e7f768533b80",
+          "migrations_dir": "migrations"
+        }
+      ]
+    }
+  },
+  "account_id": "616601773df7cd10aa50ec70a8230469"
+}
