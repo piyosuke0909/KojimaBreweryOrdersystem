@@ -58,7 +58,7 @@ test('スマートフォンで商品を選び、到着日を指定して発注�
 
 test('LINE未連携でも商品紹介と問い合わせ先を参照できる', async ({ page }) => {
   await page.goto('/products');
-  await expect(page.getByRole('heading', { name: '小島醸造のお酒' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '商品紹介', exact: true })).toBeVisible();
   await page.locator('.ko-public-product').first().click();
   for (const name of ['商品説明', 'こだわり', '味わい', 'おすすめの飲み方']) {
     await expect(page.getByRole('heading', { name, exact: true })).toBeVisible();
