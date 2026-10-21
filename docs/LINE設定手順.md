@@ -1,38 +1,41 @@
 # LINEの登録とID取得
 
-## 現在の本番設定（切替前）
+## 現在の本番設定
 
-- LINE LoginチャネルID: `2012094093`
+- LINE LoginチャネルID: `2011901973`
 - Messaging APIチャネルID: `2011903727`
-- LIFF ID: `2012094093-ApA0tjfW`
-- LIFF URL: `https://liff.line.me/2012094093-ApA0tjfW`
+- LIFF ID: `2011901973-juZ5QTYX`
+- LIFF URL: `https://liff.line.me/2011901973-juZ5QTYX`
 - LIFFエンドポイントURL: `https://kojima-brewery-v2-a6577637.crossover-616.workers.dev/`
 - Messaging API Webhook URL: `https://kojima-brewery-v2-a6577637.crossover-616.workers.dev/api/line/webhook`
 - 管理画面: `https://kojima-brewery-v2-a6577637.crossover-616.workers.dev/admin`
 
 LIFFエンドポイントは末尾 `/` を含むトップURLです。`/invite`・`/order`・`/orders` を同じLIFFアプリで使用するため、特定画面のパスをエンドポイントに指定しません。
 
+2026-10-21にユーザーが上記のWorkers用LIFFを新規作成し、本番Workerとリッチメニューへの反映を完了しました。Workerの設定APIでLogin・LIFF・Messagingの各IDと既存LINE Secretの保持、公開設定APIで新LIFF ID、管理者ログインの成功を確認しました。Workerのバージョンは `f5164ca3-1147-4998-b48a-67b59babd0c4` です。新LIFFによる実アカウントの企業登録・通知の確認と、Loginチャネルの公開状態の確認は引き続き必要です。切替前はLogin `2012094093`、LIFF `2012094093-ApA0tjfW` でした。
+
 ## 2026-10-21に確認したプロバイダーの不一致
 
-上記は現在の本番設定です。LINE Developersの画面で、ログインと通知のチャネルが次の別プロバイダーに属することを確認しました。
+LINE Developersの画面で、切替前のログインと通知のチャネルが次の別プロバイダーに属することを確認しました。切替先は通知側と同じプロバイダーです。
 
 |用途|チャネルID|プロバイダーID|プロバイダー名|
 |---|---|---|---|
-|現在のLINE Login|`2012094093`|`2005652023`|小島醸造 注文受付システム|
+|切替前のLINE Login|`2012094093`|`2005652023`|小島醸造 注文受付システム|
 |継続して使うMessaging API|`2011903727`|`2005607301`|小島醸造|
+|現在のLINE Login|`2011901973`|`2005607301`|小島醸造|
 
-同じLINEアカウントでもプロバイダーが異なると利用者IDが変わるため、企業登録が完了していても現在の登録IDへ通知できません。プロバイダー名やチャネル名ではなく、上表の固有IDで区別します。LoginとMessaging APIのチャネルIDが異なること自体は正常です。
+同じLINEアカウントでもプロバイダーが異なると利用者IDが変わるため、企業登録が完了していても切替前に保存した登録IDへ通知できません。プロバイダー名やチャネル名ではなく、上表の固有IDで区別します。LoginとMessaging APIのチャネルIDが異なること自体は正常です。
 
-通知側の[小島醸造プロバイダー](https://developers.line.biz/console/provider/2005607301)にある既存LINEログインチャネルは `2011901973` です。その既存LIFF `2011901973-WNMvVASy` は以前のサイト `https://kojima-jozo-orders.w-sakai-k.chatgpt.site/` を向いているため、変更せずに残します。同じLINEログインチャネル内へ今回のWorkers用LIFFを追加し、そのIDを確認してから `LINE_CHANNEL_ID` と `LIFF_ID` を切り替えます。Messaging API、公式アカウント、友だち、Webhook、シークレットは維持します。`2011903727` はMessaging API用なので、LINE Login用のIDとして設定しません。
+通知側の[小島醸造プロバイダー](https://developers.line.biz/console/provider/2005607301)にある既存LINEログインチャネルは `2011901973` です。その既存LIFF `2011901973-WNMvVASy` は以前のサイト `https://kojima-jozo-orders.w-sakai-k.chatgpt.site/` を向いているため、変更せずに残しています。同じLINEログインチャネル内に追加したWorkers用LIFF `2011901973-juZ5QTYX` を使い、`LINE_CHANNEL_ID` と `LIFF_ID` を一緒に切り替えました。Messaging API、公式アカウント、友だち、Webhook、シークレットは維持しています。`2011903727` はMessaging API用なので、LINE Login用のIDとして設定しません。
 
-切替時はリッチメニューの4リンクと招待QRも新LIFFにそろえます。既に発行したQRのURLは設定変更では変わりません。新LIFFから有効な招待で登録し直し、既存の担当者・注文・請求は保持します。一般のLINEアカウントで利用する前に、切替先のLINEログインチャネルが公開状態かも確認します。現在はWorkers用の新LIFF IDの確認待ちで、本番設定の切替はまだ行っていません。
+リッチメニューの4リンクは新LIFFへ反映済みです。既に発行したQRのURLは設定変更では変わらないため、登録には新LIFFの有効な招待URLを使用します。既存の担当者・注文・請求は保持しています。Workerの両設定値とリッチメニューの4リンクの確認は完了しました。次に新LIFFから企業登録し、署名済みWebhookとの利用者一致と通知の結果を確認します。一般のLINEアカウントで利用する前に、LINEログインチャネルが公開状態かも確認します。
 
 ## 登録手順
 
 1. LINE Official Account Manager (`https://manager.line.biz/`) で公式アカウントを開き、設定 → Messaging API → 利用する、からMessaging APIを有効にします。選んだプロバイダーを確認してください。
 2. LINE Developers (`https://developers.line.biz/console/`) でMessaging APIと同じプロバイダー固有IDの項目を開きます。既存のLINE Loginチャネルがあれば優先し、なければアプリタイプ「ウェブアプリ」で作成します。
 3. LINE Loginの基本設定で、小島醸造のLINE公式アカウントをリンクします。プロバイダーが異なる場合は、利用者IDも異なるため同一のプロバイダーに揃える必要があります。
-4. LINE LoginのLIFFタブ → 追加。名前は「小島醸造 法人受注」、サイズはFull、エンドポイントは上記トップURL、Scopeは `openid` と `profile`。友だち追加オプションはオン、選べる場合は `aggressive` にします。
+4. LINE LoginのLIFFタブ → 追加。名前は「小島醸造 法人受注」、サイズはFull、エンドポイントは上記トップURL、Scopeは `openid` と `profile`。友だち追加オプションはオン（Normal）にします。
 5. 保存して表示されるLIFF IDを取得します。LINE Loginの「チャネル基本設定 → チャネルID」も取得します。顧客公開前にLINE Loginチャネルを公開状態にします。
 
 ## 設定値の対応
@@ -55,13 +58,13 @@ LIFFエンドポイントは末尾 `/` を含むトップURLです。`/invite`�
 
 公式仕様: [LINE OpenAPI](https://github.com/line/line-openapi/blob/main/channel-access-token.yml)、[LINE公式Node SDK](https://github.com/line/line-bot-sdk-nodejs/blob/master/lib/channel-access-token/api/channelAccessTokenClient.ts)。
 
-2026-10-19時点でLINE LoginチャネルIDとLIFF IDを受領し、本番構成とCodex環境設定下書きへ保存しました。両IDは本番Workerへデプロイ済みです。同日にCloudflare Workerの設定APIで、`LINE_CHANNEL_SECRET` と `LINE_CHANNEL_ACCESS_TOKEN` の両方が `secret_text` として登録されていることを確認しました。秘密値は取得・表示していません。登録の確認と、認証情報の正しさ・実際の接続確認は別です。
+2026-10-19に切替前のLINE Login `2012094093` とLIFF `2012094093-ApA0tjfW` を受領し、本番構成とCodex環境設定下書きへ保存してデプロイしました。同日にCloudflare Workerの設定APIで、`LINE_CHANNEL_SECRET` と `LINE_CHANNEL_ACCESS_TOKEN` の両方が `secret_text` として登録されていることを確認しました。秘密値は取得・表示していません。登録の確認と、認証情報の正しさ・実際の接続確認は別です。
 
 Messaging API設定（`https://developers.line.biz/console/channel/2011903727/messaging-api`）のWebhook設定へ上記Webhook URLを登録して保存し、「検証」を押します。成功を確認して「Webhookの利用」をオンにしてください。検証に失敗した場合は、表示されたエラー内容で原因を確認します。Webhook検証はチャネルシークレットの署名確認であり、アクセストークンによる通知の送信確認は別途必要です。
 
 2026-10-19にユーザーからLINE ConsoleのWebhook検証が成功したと報告を受けました。LINEからWebhookへの接続と署名確認は成功した段階です。`Use webhook`、`Webhook redelivery`、`Error statistics aggregation` はオンを案内していますが、スイッチの最終状態は未確認です。実際のLINEログイン・招待登録・注文通知の送信は引き続き確認が必要です。
 
-リッチメニューの4導線は「注文」「注文履歴」「お問い合わせ」「商品紹介」です。LIFF ID確定後に、それぞれのLIFF URLを設定します。最後に実際のLINEアカウントで、招待QR→氏名登録→注文→通知まで確認します。
+リッチメニューの4導線は「注文」「注文履歴」「お問い合わせ」「商品紹介」です。現在反映済みのLIFF URLは下表のとおりです。実際のLINEアカウントで招待QR→氏名登録→注文→通知までの確認を続けます。
 
 ## 招待QRからの企業登録
 
@@ -75,14 +78,14 @@ LINEログイン後、IDトークンを取得できない場合も、LIFFアク�
 
 `https://kojima-brewery-v2-a6577637.crossover-616.workers.dev/admin/settings?tab=line-rich-menu`
 
-オーナー管理者の「LINEに反映する」で、次の4分割メニューを友だち全員の標準メニューに設定します。Workersに登録済みのアクセストークンをサーバー内部で使用するため、トークンを再入力する必要はありません。接続先が小島醸造の `@060ucble` と一致することを確認してから反映します。
+オーナー管理者の「LINEに反映する」で、次の4分割メニューを友だち全員の標準メニューに設定します。下表の新LIFFリンクはLINEへ反映済みです。Workersに登録済みのアクセストークンをサーバー内部で使用するため、トークンを再入力する必要はありません。接続先が小島醸造の `@060ucble` と一致することを確認してから反映します。
 
 |位置|ボタン|リンク先|
 |---|---|---|
-|左上|注文|`https://liff.line.me/2012094093-ApA0tjfW/order`|
-|右上|注文履歴|`https://liff.line.me/2012094093-ApA0tjfW/orders`|
-|左下|お問い合わせ|`https://liff.line.me/2012094093-ApA0tjfW/contact`|
-|右下|商品紹介|`https://liff.line.me/2012094093-ApA0tjfW/products`|
+|左上|注文|`https://liff.line.me/2011901973-juZ5QTYX/order`|
+|右上|注文履歴|`https://liff.line.me/2011901973-juZ5QTYX/orders`|
+|左下|お問い合わせ|`https://liff.line.me/2011901973-juZ5QTYX/contact`|
+|右下|商品紹介|`https://liff.line.me/2011901973-juZ5QTYX/products`|
 
 画像は `public/richmenu/kojima-richmenu.jpg`（2500×1686px、1MB未満）です。生成した紺と金のオリジナル図案をLINE用JPEGへ書き出しています。画像アップロード後はLINEから取得した画像とSHA-256を照合し、標準メニューのIDと4つのリンクを再確認します。既存のメニューは削除せず、同じ画像・リンクで再反映した場合は現在のメニューを再利用します。顧客別にメニューを割り当てている場合、その個別設定は変更しません。
 
@@ -99,6 +102,8 @@ node --use-env-proxy scripts/install-line-richmenu.mjs --apply
 
 反映結果はGit対象外の `.local/line-richmenu-installation.json` に記録します。このコマンドは、本番の取引先・商品・価格・注文を作成・変更しません。
 
-2026-10-20 10:17（日本時間）に、小島醸造の公式アカウント `@060ucble` へ反映済みです。標準メニューIDは `richmenu-dc05c169fd0efc28f9f5c18c0c80020f`。LINEに保存された画像の一致、4つのリンクと初期表示オンを確認しました。トークンは登録済みシークレットから自動取得するため、長期トークンの手動貼り直しは不要です。
+2026-10-20 10:17（日本時間）に、小島醸造の公式アカウント `@060ucble` へ切替前LIFFのメニューを反映しました。当時の標準メニューIDは `richmenu-dc05c169fd0efc28f9f5c18c0c80020f`。LINEに保存された画像の一致、4つのリンクと初期表示オンを確認しました。この結果は今回の新LIFFへの反映確認とは区別します。トークンは登録済みシークレットから自動取得するため、長期トークンの手動貼り直しは不要です。
+
+2026-10-21に新LIFFの4リンクを持つ標準メニュー `richmenu-b8eb2539b7218cfc448f217a69dbc11c` を反映しました。LINEに保存された画像のハッシュ一致、4つの新リンク、既定メニューIDを確認し、以前のメニューは削除せず保持しています。端末での新LIFFへの遷移と実アカウントの再登録・通知は引き続き確認が必要です。
 
 既存のメニューが別チャネル所有で取得できない場合も、未設定とは区別して表示し、新しい標準メニューへ切り替えられます。既存のメニューや個別割当は削除しません。元のメニューIDを取得できない状態で切替後に問題が起きた場合は、表示中の新しいメニューを保持し、状態の再確認を案内します。

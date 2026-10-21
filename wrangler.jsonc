@@ -29,8 +29,8 @@
       "vars": {
         "APP_ENV": "production",
         "ALLOW_DEMO_AUTH": "false",
-        "LIFF_ID": "2012094093-ApA0tjfW",
-        "LINE_CHANNEL_ID": "2012094093",
+        "LIFF_ID": "2011901973-juZ5QTYX",
+        "LINE_CHANNEL_ID": "2011901973",
         "LINE_MESSAGING_CHANNEL_ID": "2011903727"
       },
       "assets": {
