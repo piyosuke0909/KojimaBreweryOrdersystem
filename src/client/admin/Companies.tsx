@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
   Search, Plus, ArrowLeft, Building2, MapPin, QrCode, Tag, FileText,
-  Pencil, Save, Copy, Printer, CircleCheck, Trash2, Users,
+  Pencil, Save, Copy, Printer, CircleCheck, Trash2, Users, Download, Ban,
 } from 'lucide-react';
 import QRCode from 'qrcode';
 import { api, apiRaw, money, date } from './api';
@@ -10,6 +10,7 @@ import {
   Badge, Loading, Empty, ErrorBox, Modal, Pagination, ConfirmDialog,
   FieldHelp, useRowNavigation, navigableRowProps,
 } from './ui';
+import './invitations.css';
 
 type Row = Record<string, any>;
 type Field = {
@@ -181,6 +182,9 @@ function CompanyDetail({ id }: { id: string }) {
   const [success, setSuccess] = useState('');
   const [qr, setQr] = useState<Row | null>(null);
   const [qrImage, setQrImage] = useState('');
+  const [qrLoading, setQrLoading] = useState<string | null>(null);
+  const [qrError, setQrError] = useState('');
+  const [qrNotice, setQrNotice] = useState('');
 
   async function load() {
     try { const result = await api<Row>(`/api/admin/companies/${id}`); setCompany(result); return result; }
@@ -203,11 +207,32 @@ function CompanyDetail({ id }: { id: string }) {
   }, [company, products]);
   useEffect(() => {
     setQrImage('');
+    setQrError(''); setQrNotice('');
     if (!qr?.url) return;
     let active = true;
-    QRCode.toDataURL(qr.url, { width: 300, margin: 2, color: { dark: '#142a42', light: '#ffffff' } }).then(image => { if (active) setQrImage(image); }).catch(() => { if (active) setError('QR画像を生成できませんでした。招待URLをコピーしてご利用ください。'); });
+    QRCode.toDataURL(qr.url, { width: 1000, margin: 4, color: { dark: '#142a42', light: '#ffffff' } }).then(image => { if (active) setQrImage(image); }).catch(() => { if (active) setQrError('QR画像を生成できませんでした。招待URLをコピーしてご利用ください。'); });
     return () => { active = false; };
   }, [qr]);
+
+  async function showQr(invitation: Row) {
+    if (qrLoading) return;
+    setQrLoading(invitation.id); setError('');
+    try {
+      const result = await api<Row>(`/api/admin/companies/${id}/invitations/${invitation.id}/qr`, { cache: 'no-store' });
+      setQr(result);
+    } catch (err) { setError((err as Error).message); }
+    finally { setQrLoading(null); }
+  }
+
+  function downloadQr() {
+    if (!qrImage || !company || !qr) return;
+    const companyName = String(company.name || '取引先').replace(/[\\/:*?"<>|\u0000-\u001f]/g, '').trim().slice(0, 80) || '取引先';
+    const link = document.createElement('a');
+    link.href = qrImage;
+    link.download = `${companyName}_LINE招待QR_${String(qr.id || '').slice(0, 8)}.png`;
+    document.body.appendChild(link); link.click(); link.remove();
+    setQrNotice('QR画像の保存を開始しました。ダウンロード先をご確認ください。');
+  }
 
   const changedPrices = Object.values(priceDraft).filter(row => {
     const previous = priceOriginal[row.product_id];
@@ -251,9 +276,10 @@ function CompanyDetail({ id }: { id: string }) {
     ['prices', '販売単価', Tag], ['contracts', '契約・請求条件', FileText], ['orders', '注文履歴', FileText],
   ] as const;
   const activeInvitations = (company.invitations || []).filter((row: Row) => !row.deleted_at);
+  const invitationExpired = (invitation: Row) => !!invitation.expires_at && Date.parse(invitation.expires_at) <= Date.now();
+  const legacyQrUnavailable = (invitation: Row) => invitation.status === 'active' && !invitation.qr_available && !invitationExpired(invitation);
   const invitationFields: Field[] = [
     { key: 'max_uses', label: '登録可能人数', type: 'number', min: Math.max(1, editing?.row.used_count || 0), max: 10000, placeholder: '例：5（空欄で無制限）', help: 'ひとつのQRコードから登録できる人数です。空欄は無制限です。登録済みの人数より少ない上限には変更できません。' },
-    { key: 'expires_at', label: '有効期限', type: 'date', required: true, help: '招待QRから新しく登録できる期限です。指定日の23:59（日本時間）まで有効です。すでに登録したLINE利用者には影響しません。' },
     { key: 'note', label: '備考', type: 'textarea', wide: true, placeholder: '例：店長・発注担当者向けに発行', help: '誰に渡す招待状か、発行目的などを記録します。招待URLやトークンはここに保存しないでください。' },
   ];
 
@@ -283,12 +309,13 @@ function CompanyDetail({ id }: { id: string }) {
 
     {tab === 'line' && <>
       <section className="admin-card">
-        <div className="admin-card-head"><div><h2>LINE招待QRコード</h2><span className="admin-muted">ひとつのQRコードから、複数の担当者を招待できます</span></div><button className="admin-btn primary" onClick={() => beginEdit('invitations', { max_uses: 5, expires_at: dateFieldValue(new Date(Date.now() + 30 * 86400000).toISOString()), status: 'active' })}><Plus size={17} />招待QRを発行</button></div>
-        <div className="admin-info-text">招待URLは発行直後にのみ表示されます。発行時にQR案内状を印刷・保存してください。無効化は新しい登録を停止し、削除は一覧から取り除きます。登録済みのLINE利用者はどちらの操作でも引き続き利用できます。</div>
-        <div className="admin-table-wrap"><table className="admin-table"><thead><tr><th>発行日</th><th>登録人数 / 上限</th><th>有効期限</th><th>状態</th><th>操作</th></tr></thead><tbody>{activeInvitations.map((invitation: Row) => <tr key={invitation.id} {...navigableRowProps(() => beginEdit('invitations', invitation), `${date(invitation.created_at)}発行の招待QRを編集`)}>
-          <td>{date(invitation.created_at)}</td><td>{invitation.used_count} / {invitation.max_uses ?? '無制限'} 名</td><td>{date(invitation.expires_at)}</td><td><Badge value={invitation.status} /></td>
-          <td><div className="admin-inline-actions"><button className="admin-table-detail" onClick={() => beginEdit('invitations', invitation)}>上限・期限変更</button>{invitation.status === 'active' && <button className="admin-text-danger" onClick={() => { setError(''); setConfirm({ type: 'revoke', row: invitation }); }}>無効化</button>}<button className="admin-text-danger" aria-label={`${date(invitation.created_at)}発行の招待QRを削除`} onClick={() => beginDelete('invitations', invitation)}>削除</button></div></td>
+        <div className="admin-card-head"><div><h2>LINE招待QRコード</h2><span className="admin-muted">同じQRを、あとから何度でも表示・保存できます</span></div><button className="admin-btn primary" onClick={() => beginEdit('invitations', { max_uses: 5, expires_at: null, status: 'active' })}><Plus size={17} />招待QRを発行</button></div>
+        <div className="admin-info-text">有効期限の設定は不要です。「QRを表示・保存」から画像を保存できます。登録上限を変更しても同じQRを使え、登録人数はリセットされません。無効化・削除しても、登録済みのLINE利用者は引き続き利用できます。</div>
+        <div className="admin-table-wrap"><table className="admin-table admin-record-table admin-invitation-table"><thead><tr><th>発行日</th><th>登録人数 / 上限</th><th>状態</th><th>操作</th></tr></thead><tbody>{activeInvitations.map((invitation: Row) => <tr key={invitation.id} {...navigableRowProps(() => invitation.qr_available && invitation.status === 'active' ? void showQr(invitation) : beginEdit('invitations', invitation), `${date(invitation.created_at)}発行の招待QRを開く`)}>
+          <td data-label="発行日">{date(invitation.created_at)}{legacyQrUnavailable(invitation) && <small className="admin-invitation-note">以前のQR・再表示不可</small>}</td><td data-label="登録人数 / 上限">{invitation.used_count} / {invitation.max_uses ?? '無制限'} 名{invitation.max_uses != null && invitation.used_count >= invitation.max_uses && <small className="admin-invitation-note">登録上限に達しています</small>}</td><td data-label="状態"><Badge value={invitation.status === 'active' && invitationExpired(invitation) ? 'expired' : invitation.status} />{invitation.expires_at && <small className="admin-invitation-note">旧設定の期限：{date(invitation.expires_at)}</small>}</td>
+          <td data-label="操作"><div className="admin-inline-actions admin-invitation-actions">{invitation.status === 'active' && invitation.qr_available && <button className="admin-btn secondary" disabled={!!qrLoading} onClick={() => void showQr(invitation)}><QrCode size={16} />{qrLoading === invitation.id ? '読み込み中…' : 'QRを表示・保存'}</button>}<button className="admin-btn secondary" onClick={() => beginEdit('invitations', invitation)}><Pencil size={16} />登録上限を変更</button>{invitation.status === 'active' && <button className="admin-btn secondary admin-invitation-danger" onClick={() => { setError(''); setConfirm({ type: 'revoke', row: invitation }); }}><Ban size={16} />無効化</button>}<button className="admin-btn secondary admin-invitation-danger" aria-label={`${date(invitation.created_at)}発行の招待QRを削除`} onClick={() => beginDelete('invitations', invitation)}><Trash2 size={16} />削除</button></div></td>
         </tr>)}</tbody></table>{!activeInvitations.length && <Empty text="招待QRコードは未発行です" />}</div>
+        {activeInvitations.some(legacyQrUnavailable) && <p className="admin-info-text">以前発行したQRは保存されていないため再表示できません。画像がお手元にない場合は、新しいQRを1回発行すると、以後は一覧から何度でも表示・保存できます。</p>}
       </section>
       <section className="admin-card">
         <div className="admin-card-head"><h2>登録済みのLINE利用者</h2><span className="admin-muted">{company.line_users?.filter((user: Row) => user.status === 'active').length || 0} 名が利用中</span></div>
@@ -337,10 +364,11 @@ function CompanyDetail({ id }: { id: string }) {
       <div className="admin-modal-foot"><button className="admin-btn secondary" onClick={() => setEditing(null)}>閉じる</button>{editing.row.status === 'active' && <button className="admin-btn secondary" onClick={() => { setConfirm({ type: 'unlink', row: editing.row }); setEditing(null); }}><Users size={16} />紐付け解除</button>}</div>
     </Modal>}
     {editing && editing.type !== 'line-user' && <EntityForm
-      title={editing.type === 'company' ? '取引先情報を編集' : editing.type === 'addresses' ? '配送先を登録・編集' : editing.type === 'contracts' ? '契約を登録・編集' : editing.type === 'price' || editing.type === 'price-history' ? `${priceName(editing.row)}の専用単価を編集` : editing.row.id ? '招待QRの上限・期限を変更' : 'LINE招待QRコードを発行'}
+      title={editing.type === 'company' ? '取引先情報を編集' : editing.type === 'addresses' ? '配送先を登録・編集' : editing.type === 'contracts' ? '契約を登録・編集' : editing.type === 'price' || editing.type === 'price-history' ? `${priceName(editing.row)}の専用単価を編集` : editing.row.id ? '招待QRの登録上限を変更' : 'LINE招待QRコードを発行'}
       fields={editing.type === 'company' ? companyFields : editing.type === 'addresses' ? addressFields.map(field => field.key === 'shipping_rule_id' ? { ...field, options: [['', '自動判定'], ...rules.map(rule => [rule.id, rule.name] as [string, string])] as [string, string][] } : field) : editing.type === 'contracts' ? contractFields : editing.type === 'price-history' ? savedPriceFields : editing.type === 'price' ? priceFields : invitationFields}
       initial={editing.row}
-      extra={editing.type === 'price' || editing.type === 'price-history' ? { product_id: editing.row.product_id } : undefined}
+      notice={editing.type === 'invitations' ? editing.row.expires_at ? 'このQRには以前の有効期限が設定されています。保存すると期限なしで使えます。登録人数は変わりません。' : '有効期限はありません。登録可能人数は空欄で無制限になります。' : undefined}
+      extra={editing.type === 'price' || editing.type === 'price-history' ? { product_id: editing.row.product_id } : editing.type === 'invitations' ? { expires_at: null } : undefined}
       path={editing.type === 'company' ? `/api/admin/companies/${id}` : editing.type === 'price' ? `/api/admin/companies/${id}/prices` : editing.type === 'price-history' ? `/api/admin/companies/${id}/prices/${editing.row.id}` : `/api/admin/companies/${id}/${editing.type}${editing.row.id ? `/${editing.row.id}` : ''}`}
       method={editing.type === 'price' ? 'POST' : editing.row.id ? 'PUT' : 'POST'}
       onClose={() => setEditing(null)}
@@ -360,20 +388,21 @@ function CompanyDetail({ id }: { id: string }) {
       <p>{confirm?.type === 'prices' ? `変更した${changedPrices.length}商品の設定を${date(validFrom)}から適用します。すでに受け付けた注文の単価は変わりません。` : confirm?.type === 'revoke' ? 'このQRコードからの新しい登録を停止します。登録済みの担当者は引き続き利用できます。' : confirm?.type === 'unlink' ? `${confirm.row?.staff_name || 'この担当者'}さんは、この取引先の注文を利用できなくなります。` : confirm?.entity === 'invitations' ? 'この招待QRコードを一覧から削除し、新しい登録を停止します。登録済みのLINE利用者と注文履歴は保持され、引き続き利用できます。招待URLは再表示できません。' : confirm?.entity === 'price-history' ? 'この専用単価の設定を削除します。新しい注文では、残っている有効な専用単価があればその単価、それ以外は標準卸価格を適用します。業者限定商品は取扱条件をご確認ください。過去の注文の単価は変わりません。' : confirm?.entity === 'company' ? '取引先一覧から削除し、新しい注文・登録を停止します。過去の注文・請求・LINE登録の記録は保持します。' : '一覧から削除します。過去の注文・請求で使用した情報は履歴として保持します。'}</p>
     </ConfirmDialog>
 
-    {qr && <Modal title="招待QRコードを発行しました" onClose={() => setQr(null)} wide>
-      <div className="admin-modal-body"><div className="admin-alert info">このURLは後から再表示できません。案内状を印刷またはPDF保存してください。</div><ErrorBox error={error} /><div className="admin-qr-letter" id="admin-qr-letter"><span className="admin-eyebrow">小島醸造 受注サービス</span><h2>LINE注文サービスのご案内</h2><h3>{company.name} 御中</h3><p>いつもお引き立ていただき、ありがとうございます。<br />LINEからかんたんに、ご注文いただけます。</p>{qrImage && <img src={qrImage} width="240" height="240" alt="LINE注文サービス登録用QRコード" />}<ol><li>普段使うスマートフォンでQRコードを読み取り、LINEアプリで開く</li><li>ご担当者さまのお名前を入力して「登録する」を押す</li><li>メニューの「注文」からお買い物を始める</li></ol><p>有効期限：{date(qr.expires_at)} ／ 登録上限：{qr.max_uses ?? '無制限'}名</p><small style={{ overflowWrap: 'anywhere' }}>{qr.url}</small></div></div>
-      <div className="admin-modal-foot"><button className="admin-btn secondary" onClick={async () => { try { await navigator.clipboard.writeText(qr.url); setSuccess('招待URLをコピーしました。'); } catch { setError('URLをコピーできませんでした。表示されたURLを選択してコピーしてください。'); } }}><Copy size={17} />URLをコピー</button><Link className="admin-btn primary" to="/admin/reports/invitation" state={{ invitation: { ...qr, company_name: company.name } }}><Printer size={17} />案内状プレビュー・PDF保存</Link></div>
+    {qr && <Modal title="LINE招待QRコード" onClose={() => setQr(null)} wide>
+      <div className="admin-modal-body"><div className="admin-alert info">このQRは一覧から何度でも表示・保存できます。表示や保存で登録人数は変わりません。</div><ErrorBox error={qrError} />{qrNotice && <div className="admin-alert success" role="status">{qrNotice}</div>}<div className="admin-qr-letter" id="admin-qr-letter"><span className="admin-eyebrow">小島醸造 受注サービス</span><h2>LINE注文サービスのご案内</h2><h3>{company.name} 御中</h3><p>いつもお引き立ていただき、ありがとうございます。<br />LINEからかんたんに、ご注文いただけます。</p>{qrImage ? <img src={qrImage} width="240" height="240" alt="LINE注文サービス登録用QRコード" /> : <div className="admin-qr-image-loading" role="status">QR画像を準備しています…</div>}<ol><li>普段使うスマートフォンでQRコードを読み取り、LINEアプリで開く</li><li>ご担当者さまのお名前を入力して「登録する」を押す</li><li>メニューの「注文」からお買い物を始める</li></ol><p>登録上限：{qr.max_uses ?? '無制限'}名{qr.expires_at && <><br />旧設定の有効期限：{date(qr.expires_at)}</>}</p><small style={{ overflowWrap: 'anywhere' }}>{qr.url}</small></div></div>
+      <div className="admin-modal-foot admin-qr-modal-actions"><button className="admin-btn primary" disabled={!qrImage} onClick={downloadQr}><Download size={17} />QR画像を保存</button><button className="admin-btn secondary" onClick={async () => { try { await navigator.clipboard.writeText(qr.url); setQrNotice('招待URLをコピーしました。'); setQrError(''); } catch { setQrError('URLをコピーできませんでした。表示されたURLを選択してコピーしてください。'); } }}><Copy size={17} />URLをコピー</button><Link className="admin-btn secondary" to="/admin/reports/invitation" state={{ invitation: { ...qr, company_name: company.name } }}><Printer size={17} />案内状・PDF保存</Link></div>
     </Modal>}
   </>;
 }
 
-function EntityForm({ title, fields, initial, path, method, extra, onClose, onSaved, onDelete }: {
+function EntityForm({ title, fields, initial, path, method, extra, notice, onClose, onSaved, onDelete }: {
   title: string;
   fields: Field[];
   initial: Row;
   path: string;
   method?: string;
   extra?: Row;
+  notice?: string;
   onClose: () => void;
   onSaved: (data: any) => void | Promise<void>;
   onDelete?: () => void;
@@ -407,7 +436,7 @@ function EntityForm({ title, fields, initial, path, method, extra, onClose, onSa
 
   return <Modal title={title} onClose={() => { if (!busy) onClose(); }} wide>
     <form onSubmit={event => { event.preventDefault(); setConfirming(true); }}>
-      <div className="admin-modal-body"><ErrorBox error={error} /><div className="admin-form-grid" style={{ minWidth: 0, maxWidth: '100%' }}>
+      <div className="admin-modal-body"><ErrorBox error={error} />{notice && <p className="admin-invitation-form-note">{notice}</p>}<div className="admin-form-grid" style={{ minWidth: 0, maxWidth: '100%' }}>
         {fields.map(field => <label key={field.key} className={`admin-field ${field.wide ? 'span-2' : ''}`} style={{ minWidth: 0, maxWidth: '100%' }}>
           {field.type === 'checkbox' ? <><span className="admin-check-label"><input type="checkbox" checked={!!form[field.key]} onChange={event => update(field.key, event.target.checked ? 1 : 0)} />{field.label}<FieldHelp label={field.label} help={field.help} hideLabel /></span></> : <>
             <span><FieldHelp label={field.label} help={field.help} />{field.required && <span className="admin-required">必須</span>}</span>

@@ -3,7 +3,7 @@ import type { AppEnv } from '../types';
 import { jstDate } from '../../domain';
 import { actor, assertChanges, atomic, audit, body, date, fail, insert, integer, now, one, paginated, routerError, rows, settings, string, uid, update, type Row } from '../services/common';
 import { masterRoutes, saveMaster, softDeleteMaster } from '../services/masters';
-import { issueInvitation } from '../services/invitations';
+import { invitationTokenKey, issueInvitation, publicInvitation, restoreInvitationQr, savedInvitationQr } from '../services/invitations';
 import { cancelInvoice, findInvoice, invoiceDetail, issueInvoice } from '../services/invoices';
 import { orderRoutes } from './orders';
 import { deliveryDates } from '../services/orders';
@@ -39,10 +39,10 @@ adminRoutes.get('/companies/:id',async c=>{
     rows(c.env.DB,'SELECT * FROM shipping_addresses WHERE company_id=? AND deleted_at IS NULL ORDER BY is_default DESC,name',id),
     rows(c.env.DB,'SELECT cp.*,p.name AS product_name,p.volume_ml FROM company_product_prices cp JOIN products p ON p.id=cp.product_id WHERE company_id=? AND cp.deleted_at IS NULL ORDER BY cp.valid_from DESC',id),
     rows(c.env.DB,'SELECT * FROM contracts WHERE company_id=? AND deleted_at IS NULL ORDER BY start_date DESC',id),
-    rows(c.env.DB,'SELECT id,company_id,max_uses,used_count,expires_at,status,created_by,created_at,note FROM invitations WHERE company_id=? AND deleted_at IS NULL ORDER BY created_at DESC',id),
+    rows(c.env.DB,'SELECT * FROM invitations WHERE company_id=? AND deleted_at IS NULL ORDER BY created_at DESC',id),
     rows(c.env.DB,'SELECT * FROM line_users WHERE company_id=? ORDER BY registered_at DESC',id)
   ]);
-  return c.json({data:{...company,addresses,prices,contracts,invitations,line_users:users}});
+  return c.json({data:{...company,addresses,prices,contracts,invitations:invitations.map(row=>publicInvitation({...row,company_status:company.status})),line_users:users}});
 });
 for(const [resource,table] of [['addresses','shipping_addresses'],['contracts','contracts']] as const) {
   adminRoutes.get(`/companies/:id/${resource}`,async c=>{await companyExists(c);return c.json({data:await rows(c.env.DB,`SELECT * FROM ${table} WHERE company_id=? AND deleted_at IS NULL`,c.req.param('id'))});});
@@ -104,19 +104,34 @@ adminRoutes.put('/companies/:id/prices/:childId',async c=>{
 for(const [resource,table]of [['prices','company_product_prices'],['invitations','invitations']]as const)adminRoutes.delete(`/companies/:id/${resource}/:childId`,async c=>{
   await companyExists(c);return c.json({data:await softDeleteMaster(c,table,c.req.param('childId'),c.req.param('id'))});
 });
-adminRoutes.get('/companies/:id/invitations',async c=>{await companyExists(c);return c.json({data:await rows(c.env.DB,'SELECT id,company_id,max_uses,used_count,expires_at,status,created_by,created_at,note FROM invitations WHERE company_id=? AND deleted_at IS NULL ORDER BY created_at DESC',c.req.param('id'))});});
-adminRoutes.post('/companies/:id/invitations',async c=>{const company=await companyExists(c);if(company.status!=='active')fail(409,'COMPANY_INACTIVE','無効な取引先の招待は作成できません。');return c.json({data:await issueInvitation(c.env.DB,actor(c),company.id,await body(c),new URL(c.req.url).origin,c.env.LIFF_ID)},201);});
+adminRoutes.get('/companies/:id/invitations',async c=>{const company=await companyExists(c);return c.json({data:(await rows(c.env.DB,'SELECT * FROM invitations WHERE company_id=? AND deleted_at IS NULL ORDER BY created_at DESC',c.req.param('id'))).map(row=>publicInvitation({...row,company_status:company.status}))});});
+adminRoutes.post('/companies/:id/invitations',async c=>{const company=await companyExists(c);if(company.status!=='active')fail(409,'COMPANY_INACTIVE','無効な取引先の招待は作成できません。');c.header('Cache-Control','no-store');return c.json({data:await issueInvitation(c.env.DB,actor(c),company.id,await body(c),new URL(c.req.url).origin,c.env.LIFF_ID,invitationTokenKey(c.env))},201);});
+adminRoutes.get('/companies/:id/invitations/:childId/qr',async c=>{
+  await companyExists(c);c.header('Cache-Control','no-store');
+  return c.json({data:await savedInvitationQr(c.env.DB,c.req.param('id'),c.req.param('childId'),new URL(c.req.url).origin,c.env.LIFF_ID,invitationTokenKey(c.env))});
+});
+adminRoutes.put('/companies/:id/invitations/:childId/qr',async c=>{
+  const who=actor(c);
+  if(who?.role!=='owner')fail(403,'OWNER_REQUIRED','既存の招待QRの保存はオーナー管理者のみ操作できます。');
+  await companyExists(c);c.header('Cache-Control','no-store');
+  return c.json({data:await restoreInvitationQr(c.env.DB,who,c.req.param('id'),c.req.param('childId'),await body(c),new URL(c.req.url).origin,c.env.LIFF_ID,invitationTokenKey(c.env))});
+});
 adminRoutes.put('/companies/:id/invitations/:childId',async c=>{
   const before=await one(c.env.DB,'SELECT * FROM invitations WHERE id=? AND company_id=? AND deleted_at IS NULL',c.req.param('childId'),c.req.param('id'));
   if(!before) fail(404,'NOT_FOUND','招待が見つかりません。');
   const input=await body(c),data:Row={};
   if(input.max_uses!==undefined) data.max_uses=input.max_uses===null?null:integer(input.max_uses,'登録上限',Math.max(1,before!.used_count),10000);
-  if(input.expires_at!==undefined) {const expiry=string(input.expires_at,'有効期限',true,40);if(!Number.isFinite(Date.parse(expiry)) || Date.parse(expiry)<=Date.now())fail(400,'INVALID_INPUT','有効期限は未来の日時を指定してください。');data.expires_at=new Date(expiry).toISOString();}
+  if(input.expires_at!==undefined) {if(input.expires_at===null||input.expires_at==='')data.expires_at='';else{const expiry=string(input.expires_at,'有効期限',true,40);if(!Number.isFinite(Date.parse(expiry)) || Date.parse(expiry)<=Date.now())fail(400,'INVALID_INPUT','有効期限は未来の日時を指定してください。');data.expires_at=new Date(expiry).toISOString();}}
   if(input.note!==undefined) data.note=input.note===null?null:string(input.note,'備考',false,2000);
   if(!Object.keys(data).length) fail(400,'INVALID_INPUT','変更する項目を指定してください。');
-  const {token_hash,...safe}=before!;
-  await atomic(c.env.DB,[update(c.env.DB,'invitations',data,'id=?',before!.id),audit(c.env.DB,actor(c),'INVITE_UPDATE','invitations',before!.id,safe,{...safe,...data},before!.company_id)]);
-  return c.json({data:{...safe,...data}});
+  const safe=publicInvitation(before!),merged=publicInvitation({...before,...data});
+  // Registration may consume a slot after the initial read; check the current count atomically.
+  const capped=data.max_uses!=null;
+  await atomic(c.env.DB,[
+    update(c.env.DB,'invitations',data,`id=? AND company_id=? AND deleted_at IS NULL${capped?' AND used_count<=?':''}`,before!.id,before!.company_id,...(capped?[data.max_uses]:[])),
+    assertChanges(c.env.DB,1,actor(c),'INVITE_UPDATE','invitations',before!.id,safe,merged,before!.company_id),
+  ]);
+  return c.json({data:merged});
 });
 adminRoutes.post('/companies/:id/invitations/:childId/revoke',async c=>{
   const invitation=await one(c.env.DB,'SELECT id,company_id,status FROM invitations WHERE id=? AND company_id=? AND deleted_at IS NULL',c.req.param('childId'),c.req.param('id'));

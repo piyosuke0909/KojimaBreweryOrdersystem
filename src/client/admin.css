@@ -102,3 +102,23 @@
 @media(max-width:600px){.admin-record-table,.admin-record-table tbody,.admin-record-table tr,.admin-record-table td{display:block;width:100%;white-space:normal}.admin-record-table{border:0;background:transparent}.admin-record-table thead{display:none}.admin-record-table tbody{padding:0 12px}.admin-record-table tr{padding:0;margin:0 0 14px;border:1px solid var(--line);border-radius:6px;overflow:hidden;background:#fff}.admin-record-table tr:last-child{margin-bottom:0}.admin-record-table td,.admin-record-table td:first-child,.admin-record-table td:last-child{padding:10px 12px;border:0;border-bottom:1px solid var(--line);display:grid;grid-template-columns:minmax(74px,28%) minmax(0,1fr);gap:10px;text-align:left;min-height:43px}.admin-record-table td:last-child{border-bottom:0}.admin-record-table td::before{content:attr(data-label);font-size:11px;font-weight:500;color:#5c6e83;line-height:1.7;border-right:1px solid var(--line);padding-right:10px;display:flex;align-items:center}.admin-record-table td.num{text-align:left;white-space:normal}.admin-record-table td>*{max-width:100%;min-width:0}.admin-record-table .admin-badge{justify-self:start}.admin-record-table .admin-cell-sub{grid-column:2;margin-top:-5px}.admin-record-table .admin-order-id{font-size:12px}.admin-recent .admin-record-table tbody{padding:0}.admin-record-table .admin-invoice-flag{justify-self:start}.admin-record-table .admin-inline-actions{grid-column:2}.admin-kpi{display:block}.admin-kpi-icon{width:35px;height:35px;margin-bottom:8px}.admin-kpi-icon svg{width:21px;height:21px}.admin-kpi-label{font-size:11px}.admin-kpi-number{font-size:33px}.admin-kpi-compare{font-size:10px}.admin-top-breadcrumb{gap:7px;font-size:10px}.admin-account{gap:8px;font-size:11px}.admin-account-avatar{width:29px;height:29px}.admin-topbar{padding-left:14px;padding-right:14px;gap:10px}.admin-record-table .admin-clickable-row:focus-visible{outline-offset:-2px}}
 
 @media(prefers-reduced-motion:reduce){.admin-root *,.admin-root *::before,.admin-root *::after{scroll-behavior:auto!important;transition:none!important;animation:none!important}}
+
+/* Keep each operational record and its actions easy to distinguish. */
+.admin-table{--admin-row-divider:#9bacc2;--admin-cell-divider:#c3cfde;border-color:var(--admin-row-divider)}
+.admin-table th{border-color:var(--admin-cell-divider);border-bottom:2px solid var(--admin-row-divider)}
+.admin-table td{border-color:var(--admin-cell-divider);border-bottom:2px solid var(--admin-row-divider)}
+.admin-table tbody tr:nth-child(even){background:#f2f5f9}
+.admin-table tbody tr:hover,.admin-table tbody .admin-clickable-row:hover{background:#eaf2fc}
+.admin-root .admin-btn,.admin-root .admin-table-detail,.admin-root .admin-text-danger,.admin-root .admin-text-link{min-height:44px;padding:9px 13px}
+.admin-root .admin-btn.secondary,.admin-root .admin-table-detail,.admin-root .admin-text-link{border-color:#9bafc7}
+.admin-root .admin-btn.danger,.admin-root .admin-text-danger,.admin-root .admin-icon-btn.danger{border:1px solid #bd7c85;background:#fff8f8;color:#a43842!important}
+.admin-root .admin-icon-btn.danger{min-width:44px;min-height:44px}
+.admin-root .admin-btn.danger:hover,.admin-root .admin-text-danger:hover,.admin-root .admin-icon-btn.danger:hover{background:#ffecee;border-color:#a85b66}
+.admin-inline-actions{gap:10px}
+@media(max-width:600px){
+ .admin-record-table tbody tr{border:2px solid var(--admin-row-divider);margin-bottom:16px;background:#fff}
+ .admin-record-table tbody td,.admin-record-table tbody td:first-child,.admin-record-table tbody td:last-child{border-bottom:1px solid var(--admin-cell-divider)}
+ .admin-record-table tbody td:last-child{border-bottom:0}
+ .admin-record-table td::before{border-right-color:var(--admin-cell-divider)}
+ .admin-record-table tbody tr:nth-child(even){background:#fff}
+}

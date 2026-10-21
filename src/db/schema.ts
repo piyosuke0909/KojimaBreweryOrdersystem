@@ -78,9 +78,10 @@ export const invitations = sqliteTable('invitations', {
   id: text('id').primaryKey(),
   company_id: text('company_id').notNull().references(() => companies.id),
   token_hash: text('token_hash').notNull().unique(),
+  token_ciphertext: text('token_ciphertext'),
   max_uses: integer('max_uses').default(5),
   used_count: integer('used_count').notNull().default(0),
-  expires_at: text('expires_at').notNull(),
+  expires_at: text('expires_at').notNull(), // Empty string means no expiry; APIs return null.
   status: text('status').notNull().default('active'),
   created_by: text('created_by').references(() => admins.id),
   created_at: text('created_at').notNull().default(sql`CURRENT_TIMESTAMP`),

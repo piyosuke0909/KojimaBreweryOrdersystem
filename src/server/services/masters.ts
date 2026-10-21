@@ -38,7 +38,7 @@ export async function softDeleteMaster(c:Context<AppEnv>,table:string,id:string,
     else data.status='inactive';
     if(table==='shipping_addresses')data.is_default=0;
     if(table==='companies')data.updated_at=stamp;
-    const {token_hash,...safe}=row!;
+    const {token_hash,token_ciphertext,...safe}=row!;
     await atomic(c.env.DB,[update(c.env.DB,table,data,`${key}=? AND deleted_at IS NULL${companyId?' AND company_id=?':''}`,id,...(companyId?[companyId]:[])),audit(c.env.DB,actor(c),`${actions[table]||table.toUpperCase()}_DELETE`,table,id,safe,{...safe,...data},companyId??(table==='companies'?id:row!.company_id))]);
   }
   return {id,deleted:true,mode:'soft_deleted',message:table==='invitations'?'招待QRを削除しました。登録済みのLINE利用者は引き続き利用できます。':'一覧から削除しました。過去の注文・請求・監査履歴は保持されます。'};

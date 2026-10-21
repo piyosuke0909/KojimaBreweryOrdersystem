@@ -95,7 +95,6 @@ const fieldGuidance: Record<string, { example?: string; help: string }> = {
   contact_phone: { example: '0568-00-0000', help: 'お客様に案内するお問い合わせ先の電話番号です。' },
   contact_email: { example: 'support@example.jp', help: 'お客様に案内するお問い合わせ用メールアドレスです。' },
   contact_hours: { example: '平日 9:00〜17:00（土日祝休み）', help: 'お客様に表示するお問い合わせの受付時間です。電話対応できる曜日・時間を入力します。' },
-  invite_valid_days: { example: '30', help: '招待QRを新規発行するときの標準有効日数です。発行済みのQRの有効期限は変わりません。' },
   invite_default_max_uses: { example: '5', help: '1つの招待QRから登録できるLINE担当者数の初期値です。同じ取引先でも、担当者ごとに自分のLINEアカウントで登録します。' },
   edit_lock_minutes: { example: '10', help: '同じ注文を同時に変更しないための編集ロックの保持時間です。1〜60分で設定します。' },
   multi_parcel_discount_enabled: { help: 'ヤマト宅急便が複数個口となった場合に、設定した複数個口割引を適用します。' },
@@ -457,7 +456,7 @@ const systemFields: Field[] = [
   { key: 'tax_rounding', label: '消費税の端数処理', required: true, options: [['floor', '切り捨て'], ['ceil', '切り上げ'], ['round', '四捨五入']] }, { key: 'shipping_taxable', label: '配送料を課税対象にする', type: 'checkbox' },
   { key: 'cancel_business_days', label: '変更・キャンセル期限（営業日前）', type: 'number', min: 0, max: 365, required: true }, { key: 'cancel_cutoff_time', label: '変更・キャンセルの締切時刻', type: 'time', required: true }, { key: 'min_lead_business_days', label: '最短お届けまでの営業日数', type: 'number', min: 0, max: 365, required: true }, { key: 'notification_email', label: '注文通知先メール', type: 'email' },
   { key: 'contact_phone', label: 'お問い合わせ電話番号', type: 'tel' }, { key: 'contact_email', label: 'お問い合わせメール', type: 'email' }, { key: 'contact_hours', label: 'お問い合わせ受付時間' },
-  { key: 'invite_valid_days', label: '招待QRの標準有効日数', type: 'number', min: 1, max: 3650 }, { key: 'invite_default_max_uses', label: '招待QRの標準登録上限人数', type: 'number', min: 1, max: 10000 }, { key: 'edit_lock_minutes', label: '注文編集ロック（分）', type: 'number', min: 1, max: 60 },
+  { key: 'invite_default_max_uses', label: '招待QRの標準登録上限人数', type: 'number', min: 1, max: 10000 }, { key: 'edit_lock_minutes', label: '注文編集ロック（分）', type: 'number', min: 1, max: 60 },
   { key: 'multi_parcel_discount_enabled', label: '複数個口割引を有効にする', type: 'checkbox' }, { key: 'multi_parcel_discount_amount', label: '複数個口の割引額（円）', type: 'number', min: 0, max: 1000000 },
 ];
 

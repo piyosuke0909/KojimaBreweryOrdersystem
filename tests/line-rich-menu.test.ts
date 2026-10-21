@@ -84,7 +84,7 @@ describe('LINE rich menu registration uses fixed destinations and verified image
     expect(installed).toMatchObject({rich_menu_id:NEW,previous_rich_menu_id:OLD,image_verified:true,already_installed:false});
     expect(line.state.defaultId).toBe(NEW);
     expect(line.state.menus.has(OLD)).toBe(true);
-    expect(line.state.images.get(NEW)).toEqual(image);
+    expect(Buffer.from(line.state.images.get(NEW)!).equals(Buffer.from(image))).toBe(true);
     const status=await lineRichMenuStatus(env,'https://orders.example');
     expect(status.desired_menu).toEqual(installed.menu);
     expect(status.current_menu).toEqual(status.desired_menu);

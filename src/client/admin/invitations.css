@@ -1,0 +1,79 @@
+.admin-invitation-actions {
+  gap: 10px;
+}
+
+.admin-root .admin-invitation-actions .admin-btn {
+  min-height: 44px;
+  padding: 9px 13px;
+  font-size: 12px;
+  border-width: 1px;
+  border-style: solid;
+}
+
+.admin-root .admin-invitation-actions .admin-invitation-danger {
+  border-color: #d7a1a7;
+  background: #fffafa;
+  color: #a43842;
+}
+
+.admin-root .admin-invitation-actions .admin-invitation-danger:hover {
+  border-color: #b86e77;
+  background: #fff0f0;
+}
+
+.admin-invitation-note {
+  display: block;
+  margin-top: 5px;
+  color: #687b91;
+  font-size: 11px;
+  white-space: normal;
+  line-height: 1.6;
+}
+
+.admin-invitation-form-note {
+  color: #52677f;
+  margin: 0 0 20px;
+  font-size: 13px;
+  line-height: 1.8;
+}
+
+.admin-invitation-table td:last-child {
+  width: 50%;
+  min-width: 320px;
+}
+
+.admin-qr-image-loading {
+  display: grid;
+  place-items: center;
+  width: 240px;
+  max-width: 100%;
+  min-height: 240px;
+  margin: 20px auto;
+  color: #687b91;
+}
+
+.admin-root .admin-qr-modal-actions .admin-btn {
+  min-height: 44px;
+}
+
+@media (max-width: 600px) {
+  .admin-invitation-table .admin-invitation-note {
+    grid-column: 2;
+  }
+
+  .admin-invitation-table td:last-child {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .admin-invitation-actions {
+    gap: 8px;
+  }
+
+  .admin-root .admin-invitation-actions .admin-btn {
+    min-height: 44px;
+    padding: 9px 11px;
+    white-space: normal;
+    text-align: left;
+  }
+}
