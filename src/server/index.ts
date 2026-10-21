@@ -63,10 +63,12 @@ app.use('/api/customer/*',requireActor('customer'));
 app.use('/api/customer',requireActor('customer'));
 app.route('/api/customer',customerRoutes);
 app.post('/api/line/webhook',async c=>{
-  if(!c.env.LINE_CHANNEL_SECRET)throw new HTTPException(503,{message:'LINE Webhook は未設定です。'});
+  // Channel secrets never include surrounding whitespace. Match token issuance normalization.
+  const channelSecret=c.env.LINE_CHANNEL_SECRET?.trim();
+  if(!channelSecret)throw new HTTPException(503,{message:'LINE Webhook は未設定です。'});
   const raw=await c.req.text(),signature=c.req.header('x-line-signature');
   if(!signature)throw new HTTPException(401,{message:'署名が必要です。'});
-  const key=await crypto.subtle.importKey('raw',new TextEncoder().encode(c.env.LINE_CHANNEL_SECRET),{name:'HMAC',hash:'SHA-256'},false,['verify']);
+  const key=await crypto.subtle.importKey('raw',new TextEncoder().encode(channelSecret),{name:'HMAC',hash:'SHA-256'},false,['verify']);
   let bytes:Uint8Array;try{bytes=Uint8Array.from(atob(signature),x=>x.charCodeAt(0));}catch{throw new HTTPException(401);}
   if(!await crypto.subtle.verify('HMAC',key,bytes.slice().buffer as ArrayBuffer,new TextEncoder().encode(raw)))throw new HTTPException(401,{message:'署名が一致しません。'});
   // Only a precisely formatted, signed diagnostic message records a non-identifying match result.

@@ -61,6 +61,7 @@ export async function lineNotificationDiagnostics(env:Bindings,companyId:string)
   ]);
   return {
     checked_at:new Date().toISOString(),read_only:true,
+    secret_has_outer_whitespace:typeof env.LINE_CHANNEL_SECRET==='string'&&env.LINE_CHANNEL_SECRET!==env.LINE_CHANNEL_SECRET.trim(),
     active_member_count:Number(total?.total??members.length),checked_member_count:membersResult.length,
     member_limit:MAX_MEMBERS,truncated:Number(total?.total??members.length)>MAX_MEMBERS,
     bot:{http_status:bot.http_status,expected_basic_id_match:basicIdMatches,user_id_format_valid:botId===null?false:LINE_USER_PATTERN.test(botId)},

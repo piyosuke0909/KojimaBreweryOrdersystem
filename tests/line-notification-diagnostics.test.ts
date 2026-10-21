@@ -39,6 +39,7 @@ async function request(cookie=ownerCookie){
 
 describe('owner-only LINE notification diagnostics',()=>{
   it('reads at most ten members, records no writes, and returns only safe statuses and counters',async()=>{
+    env.LINE_CHANNEL_SECRET=' \nprivate-diagnostic-channel-secret\t ';
     const operations:{url:string;method:string}[]=[];
     vi.stubGlobal('fetch',vi.fn(async(input:RequestInfo|URL,init?:RequestInit)=>{
       const url=String(input);operations.push({url,method:init?.method??'GET'});
@@ -55,6 +56,7 @@ describe('owner-only LINE notification diagnostics',()=>{
     }));
     const {response,body}=await request();
     expect(response.status).toBe(200);expect(response.headers.get('Cache-Control')).toBe('no-store');
+    expect(body.data.secret_has_outer_whitespace).toBe(true);
     expect(body.data).toMatchObject({read_only:true,active_member_count:12,checked_member_count:10,member_limit:10,truncated:true,bot:{http_status:200,expected_basic_id_match:true,user_id_format_valid:true},quota:{http_status:200,type:'limited',limit:200,consumption_http_status:200,consumed:3},webhook:{http_status:200,active:true,expected_endpoint_match:true}});
     expect(body.data.members[0]).toMatchObject({member_index:1,line_id_length:33,line_id_format_valid:true,equals_bot_user_id:true,profile_http_status:200,profile_accessible:true});
     expect(body.data.members[1]).toMatchObject({line_id_format_valid:false,profile_http_status:null,profile_check:'skipped_invalid_id'});
@@ -62,7 +64,7 @@ describe('owner-only LINE notification diagnostics',()=>{
     expect(operations.filter(x=>x.url.includes('/profile/'))).toHaveLength(9);
     expect(operations.every(x=>x.method==='GET')).toBe(true);
     const serialized=JSON.stringify(body);
-    for(const sensitive of [TOKEN,BOT_ID,'PRIVATE-','invalid-member-id',...Array.from({length:12},(_,i)=>userId(i))])expect(serialized).not.toContain(sensitive);
+    for(const sensitive of [TOKEN,BOT_ID,'private-diagnostic-channel-secret','PRIVATE-','invalid-member-id',...Array.from({length:12},(_,i)=>userId(i))])expect(serialized).not.toContain(sensitive);
     expect(db.sqlite.prepare('SELECT count(*) count FROM audit_logs').get()).toMatchObject({count:0});
   });
 
@@ -86,6 +88,7 @@ describe('owner-only LINE notification diagnostics',()=>{
       throw new Error('Member profiles must not be requested for another bot');
     }));
     const {response,body}=await request();expect(response.status).toBe(200);
+    expect(body.data.secret_has_outer_whitespace).toBe(false);
     expect(body.data.bot.expected_basic_id_match).toBe(false);
     expect(body.data.members.every((member:any)=>member.profile_http_status===null&&!member.profile_accessible)).toBe(true);
     expect(body.data.quota).toMatchObject({http_status:403,limit:null,consumption_http_status:200,consumed:null});

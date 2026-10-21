@@ -42,6 +42,17 @@ describe('signed LINE webhook identity checks',()=>{
     expect(logs()).toHaveLength(0);
   });
 
+  it('normalizes surrounding secret whitespace without accepting an empty secret',async()=>{
+    env.LINE_CHANNEL_SECRET=' \r\n'+SECRET+'\t ';
+    const result=await request([event('TRIM01')]);
+    expect(result.response.status).toBe(200);
+    expect(logs()).toHaveLength(1);
+    expect(JSON.parse(logs()[0].after_json)).toMatchObject({matched:true,check_code:'TRIM01'});
+    env.LINE_CHANNEL_SECRET=' \t\r\n';
+    expect((await request([event('EMPTY1')])).response.status).toBe(503);
+    expect(logs()).toHaveLength(1);
+  });
+
   it('ignores normal text, follow events, group sources, malformed IDs and non-exact codes',async()=>{
     const candidates=[event('ABC123',MATCHED,{message:{type:'text',text:'普通のお問い合わせ'}}),event('ABC123',MATCHED,{type:'follow'}),event('ABC123',MATCHED,{source:{type:'group',userId:MATCHED}}),event('ABC123','invalid-user-id'),event('ABC123',MATCHED,{message:{type:'text',text:'通知確認-ABC123\n'}}),event('ABC123',MATCHED,{message:{type:'text',text:'通知確認-abc123'}})];
     const result=await request(candidates);expect(result.response.status).toBe(200);expect(result.body).toEqual({data:{accepted:true}});expect(logs()).toHaveLength(0);
