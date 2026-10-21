@@ -1,6 +1,6 @@
 # LINEの登録とID取得
 
-## このシステムのURL
+## 現在の本番設定（切替前）
 
 - LINE LoginチャネルID: `2012094093`
 - Messaging APIチャネルID: `2011903727`
@@ -12,10 +12,25 @@
 
 LIFFエンドポイントは末尾 `/` を含むトップURLです。`/invite`・`/order`・`/orders` を同じLIFFアプリで使用するため、特定画面のパスをエンドポイントに指定しません。
 
+## 2026-10-21に確認したプロバイダーの不一致
+
+上記は現在の本番設定です。LINE Developersの画面で、ログインと通知のチャネルが次の別プロバイダーに属することを確認しました。
+
+|用途|チャネルID|プロバイダーID|プロバイダー名|
+|---|---|---|---|
+|現在のLINE Login|`2012094093`|`2005652023`|小島醸造 注文受付システム|
+|継続して使うMessaging API|`2011903727`|`2005607301`|小島醸造|
+
+同じLINEアカウントでもプロバイダーが異なると利用者IDが変わるため、企業登録が完了していても現在の登録IDへ通知できません。プロバイダー名やチャネル名ではなく、上表の固有IDで区別します。LoginとMessaging APIのチャネルIDが異なること自体は正常です。
+
+通知側の[小島醸造プロバイダー](https://developers.line.biz/console/provider/2005607301)には、瓶の画像の既存LINEログインチャネルもあります。まずそのチャネルIDとLIFFの設定を確認し、利用できる場合は `LINE_CHANNEL_ID` と `LIFF_ID` を切り替えます。既存LIFFが旧GAS用なら、そのLIFFを変更せず同じLINEログインチャネル内へ今回のWorkers用LIFFを追加します。Messaging API、公式アカウント、友だち、Webhook、シークレットは維持します。`2011903727` はMessaging API用なので、LINE Login用のIDとして設定しません。
+
+切替時はリッチメニューの4リンクと招待QRも新LIFFにそろえます。既に発行したQRのURLは設定変更では変わりません。新LIFFから有効な招待で登録し直し、既存の担当者・注文・請求は保持します。一般のLINEアカウントで利用する前に、切替先のLINEログインチャネルが公開状態かも確認します。現在は切替先のチャネルID・LIFF IDの確認待ちで、本番設定の切替はまだ行っていません。
+
 ## 登録手順
 
 1. LINE Official Account Manager (`https://manager.line.biz/`) で公式アカウントを開き、設定 → Messaging API → 利用する、からMessaging APIを有効にします。選んだプロバイダーを確認してください。
-2. LINE Developers (`https://developers.line.biz/console/`) で同一のプロバイダー項目を開き、LINE Loginチャネルを作成します。アプリタイプは「ウェブアプリ」です。
+2. LINE Developers (`https://developers.line.biz/console/`) でMessaging APIと同じプロバイダー固有IDの項目を開きます。既存のLINE Loginチャネルがあれば優先し、なければアプリタイプ「ウェブアプリ」で作成します。
 3. LINE Loginの基本設定で、小島醸造のLINE公式アカウントをリンクします。プロバイダーが異なる場合は、利用者IDも異なるため同一のプロバイダーに揃える必要があります。
 4. LINE LoginのLIFFタブ → 追加。名前は「小島醸造 法人受注」、サイズはFull、エンドポイントは上記トップURL、Scopeは `openid` と `profile`。友だち追加オプションはオン、選べる場合は `aggressive` にします。
 5. 保存して表示されるLIFF IDを取得します。LINE Loginの「チャネル基本設定 → チャネルID」も取得します。顧客公開前にLINE Loginチャネルを公開状態にします。
