@@ -30,7 +30,9 @@ export async function registerInvitation(db: D1Database, verifiedLine: {sub:stri
   }
   return lineUser;
 }
-export async function issueInvitation(db: D1Database, who: Row, companyId: string, input: Row, origin: string) {
+export async function issueInvitation(db: D1Database, who: Row, companyId: string, input: Row, origin: string, liffId?: string) {
+  const configuredLiffId=liffId?.trim();
+  if(liffId&&!/^\d{8,12}-[A-Za-z0-9]{1,64}$/.test(configuredLiffId!))fail(503,'LINE_LIFF_NOT_CONFIGURED','LIFF IDが正しく設定されていません。招待QRの発行前に設定を確認してください。');
   if(!await one(db,"SELECT id FROM companies WHERE id=? AND status='active' AND deleted_at IS NULL",companyId))fail(409,'COMPANY_INACTIVE','有効な取引先にのみ招待を発行できます。');
   const bytes=crypto.getRandomValues(new Uint8Array(32));
   const token=Array.from(bytes).map(b=>b.toString(16).padStart(2,'0')).join('');
@@ -44,5 +46,7 @@ export async function issueInvitation(db: D1Database, who: Row, companyId: strin
   const invitation={id,company_id:companyId,token_hash:await hashToken(token),max_uses:maxUses,used_count:0,expires_at:expiresAt,status:'active',created_by:who.id,created_at:stamp,note:input.note?string(input.note,'備考',false,2000):null};
   const {token_hash,...safe}=invitation;
   await atomic(db,[insert(db,'invitations',invitation),audit(db,who,'INVITE_ISSUE','invitations',id,null,safe,companyId)]);
-  return {...safe,token,url:`${origin}/invite?t=${token}`};
+  // Enter through LIFF so the LINE app's signed-in identity is used consistently.
+  const entry=configuredLiffId?`https://liff.line.me/${configuredLiffId}`:origin;
+  return {...safe,token,url:`${entry}/invite?t=${token}`};
 }

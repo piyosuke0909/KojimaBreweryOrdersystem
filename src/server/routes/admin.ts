@@ -103,7 +103,7 @@ for(const [resource,table]of [['prices','company_product_prices'],['invitations'
   await companyExists(c);return c.json({data:await softDeleteMaster(c,table,c.req.param('childId'),c.req.param('id'))});
 });
 adminRoutes.get('/companies/:id/invitations',async c=>{await companyExists(c);return c.json({data:await rows(c.env.DB,'SELECT id,company_id,max_uses,used_count,expires_at,status,created_by,created_at,note FROM invitations WHERE company_id=? AND deleted_at IS NULL ORDER BY created_at DESC',c.req.param('id'))});});
-adminRoutes.post('/companies/:id/invitations',async c=>{const company=await companyExists(c);if(company.status!=='active')fail(409,'COMPANY_INACTIVE','無効な取引先の招待は作成できません。');return c.json({data:await issueInvitation(c.env.DB,actor(c),company.id,await body(c),new URL(c.req.url).origin)},201);});
+adminRoutes.post('/companies/:id/invitations',async c=>{const company=await companyExists(c);if(company.status!=='active')fail(409,'COMPANY_INACTIVE','無効な取引先の招待は作成できません。');return c.json({data:await issueInvitation(c.env.DB,actor(c),company.id,await body(c),new URL(c.req.url).origin,c.env.LIFF_ID)},201);});
 adminRoutes.put('/companies/:id/invitations/:childId',async c=>{
   const before=await one(c.env.DB,'SELECT * FROM invitations WHERE id=? AND company_id=? AND deleted_at IS NULL',c.req.param('childId'),c.req.param('id'));
   if(!before) fail(404,'NOT_FOUND','招待が見つかりません。');

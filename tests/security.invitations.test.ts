@@ -54,6 +54,23 @@ const count = (table: string) => Number((db.sqlite.prepare(`SELECT count(*) coun
 const invitationRow = (id: string): any => db.sqlite.prepare('SELECT * FROM invitations WHERE id=?').get(id);
 
 describe('invitation integrity with production SQL and SQLite transactions', () => {
+  test('uses the configured LIFF entry without storing the raw invitation token', async () => {
+    const invitation=await issueInvitation(db.binding(),owner,'a',{},'https://orders.example','2012094093-ApA0tjfW');
+    expect(invitation.url).toBe(`https://liff.line.me/2012094093-ApA0tjfW/invite?t=${invitation.token}`);
+    const stored=invitationRow(invitation.id);
+    expect(stored.token_hash).not.toBe(invitation.token);
+    expect(JSON.stringify(stored)).not.toContain(invitation.token);
+    expect(JSON.stringify(db.sqlite.prepare('SELECT * FROM audit_logs').all())).not.toContain(invitation.token);
+  });
+
+  test('rejects malformed LIFF configuration before persisting an invitation or audit', async () => {
+    for(const invalid of ['https://wrong.example/app','2012094093-ApA0tjfW/other','2012094093-ApA0tjfW?redirect=wrong',' ']){
+      await expect(issueInvitation(db.binding(),owner,'a',{},'https://orders.example',invalid)).rejects.toMatchObject({status:503,code:'LINE_LIFF_NOT_CONFIGURED'});
+    }
+    expect(count('invitations')).toBe(0);
+    expect(count('audit_logs')).toBe(0);
+  });
+
   test('stores only a token hash and uses five registrations by default', async () => {
     const invitation = await issue();
     expect(invitation.token).toMatch(/^[0-9a-f]{64}$/);
