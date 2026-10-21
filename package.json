@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=24.22.1 <25"
   },
   "scripts": {
     "setup": "node scripts/setup-local.mjs && npm run db:migrate && npm run db:seed",

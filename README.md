@@ -4,7 +4,24 @@ GAS・Google Sheetsから、TypeScript / Hono / Cloudflare Workers / D1（SQLite
 
 ## 開発環境
 
-Node.js 22以上（検証環境24）、npmを使用します。このタスクはすでに隔離されているため、既存チェックアウトを使い、追加のGit worktreeは作成しません。
+Node.js **24.22.1以上の24系LTS** と、同梱のnpmを使用します。24.22.1は [2026年10月の公式セキュリティ修正版](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases) です。`.nvmrc` と `.node-version` に検証対象を固定しています。このタスクはすでに隔離されているため、既存チェックアウトを使い、追加のGit worktreeは作成しません。
+
+nvmを利用する環境では、最初にリポジトリ直下でバージョンを合わせます。
+
+```bash
+cd /workspace/KojimaBreweryOrdersystem
+nvm install
+nvm use
+```
+
+このLinux x64クラウド環境では、公式署名とSHA256を検証するインストーラーで導入し、シェルごとに新版を選択します。
+
+```bash
+cd /workspace/KojimaBreweryOrdersystem
+node --use-env-proxy scripts/setup-node.mjs
+source scripts/use-node.sh
+node --version  # v24.22.1
+```
 
 ```bash
 cd /workspace/KojimaBreweryOrdersystem
@@ -13,6 +30,8 @@ npm run setup
 npm run build
 npm run dev
 ```
+
+本番アプリはCloudflare Workers上で動作し、Node.jsサーバーを起動する構成ではありません。今回のNode.js更新対象は、開発・ビルド・テスト・デプロイ用ツールの実行環境です。更新方法と確認記録は [Node.jsセキュリティ更新](docs/Node.jsセキュリティ更新.md) を参照してください。
 
 `setup` はローカル用のランダム署名キー・初期管理者パスワードを `.dev.vars` に生成し、D1ローカルDBへマイグレーションと架空データを投入します。既存ファイルと既存データは上書きしません。Wranglerの設定・ログは書込み可能な `.local/` に保存します。
 
