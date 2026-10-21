@@ -23,9 +23,9 @@ LIFFエンドポイントは末尾 `/` を含むトップURLです。`/invite`�
 
 同じLINEアカウントでもプロバイダーが異なると利用者IDが変わるため、企業登録が完了していても現在の登録IDへ通知できません。プロバイダー名やチャネル名ではなく、上表の固有IDで区別します。LoginとMessaging APIのチャネルIDが異なること自体は正常です。
 
-通知側の[小島醸造プロバイダー](https://developers.line.biz/console/provider/2005607301)には、瓶の画像の既存LINEログインチャネルもあります。まずそのチャネルIDとLIFFの設定を確認し、利用できる場合は `LINE_CHANNEL_ID` と `LIFF_ID` を切り替えます。既存LIFFが旧GAS用なら、そのLIFFを変更せず同じLINEログインチャネル内へ今回のWorkers用LIFFを追加します。Messaging API、公式アカウント、友だち、Webhook、シークレットは維持します。`2011903727` はMessaging API用なので、LINE Login用のIDとして設定しません。
+通知側の[小島醸造プロバイダー](https://developers.line.biz/console/provider/2005607301)にある既存LINEログインチャネルは `2011901973` です。その既存LIFF `2011901973-WNMvVASy` は以前のサイト `https://kojima-jozo-orders.w-sakai-k.chatgpt.site/` を向いているため、変更せずに残します。同じLINEログインチャネル内へ今回のWorkers用LIFFを追加し、そのIDを確認してから `LINE_CHANNEL_ID` と `LIFF_ID` を切り替えます。Messaging API、公式アカウント、友だち、Webhook、シークレットは維持します。`2011903727` はMessaging API用なので、LINE Login用のIDとして設定しません。
 
-切替時はリッチメニューの4リンクと招待QRも新LIFFにそろえます。既に発行したQRのURLは設定変更では変わりません。新LIFFから有効な招待で登録し直し、既存の担当者・注文・請求は保持します。一般のLINEアカウントで利用する前に、切替先のLINEログインチャネルが公開状態かも確認します。現在は切替先のチャネルID・LIFF IDの確認待ちで、本番設定の切替はまだ行っていません。
+切替時はリッチメニューの4リンクと招待QRも新LIFFにそろえます。既に発行したQRのURLは設定変更では変わりません。新LIFFから有効な招待で登録し直し、既存の担当者・注文・請求は保持します。一般のLINEアカウントで利用する前に、切替先のLINEログインチャネルが公開状態かも確認します。現在はWorkers用の新LIFF IDの確認待ちで、本番設定の切替はまだ行っていません。
 
 ## 登録手順
 
