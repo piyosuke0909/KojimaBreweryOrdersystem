@@ -58,3 +58,9 @@
  .master-calendar-day>span{font-size:11px;width:22px;line-height:22px}
  .master-settings-body{padding-left:14px;padding-right:14px}
 }
+
+/* Product-image confirmation stays within the image field and preserves the table thumbnail size. */
+.master-product-icon img{display:block;width:100%;height:100%;object-fit:contain;border-radius:inherit}
+.master-image-preview{display:grid;grid-template-columns:minmax(0,1fr);justify-items:start;gap:9px;max-width:100%;margin-top:10px}
+.master-image-preview>img{display:block;width:240px;max-width:100%;height:170px;object-fit:contain;border:1px solid #dce3eb;border-radius:6px;background:#f8fafc}
+.master-image-preview-error{margin:0;color:#a43842;font-size:12px;line-height:1.8;overflow-wrap:anywhere}

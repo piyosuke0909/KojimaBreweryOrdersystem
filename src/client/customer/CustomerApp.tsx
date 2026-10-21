@@ -5,6 +5,7 @@ import liff from '@line/liff';
 import { AlertCircle, ArrowLeft, ArrowRight, CalendarDays, Check, CheckCircle2, ChevronRight, ClipboardList, Clock, LoaderCircle, Mail, MapPin, MessageCircle, Minus, Package, Phone, Plus, RefreshCw, Search, ShieldCheck, ShoppingBag, Truck, Wine, X } from 'lucide-react';
 import { addressName, addressText, api, ApiError, formatDate, money, productName, statuses, useResource } from './api';
 import type { Address, Product, Quote } from './api';
+import { resolveProductImageUrl } from '../../shared/product-image';
 import '../customer.css';
 
 interface Config { liff_id?: string; environment: string; demo_enabled: boolean; }
@@ -139,9 +140,10 @@ function Modal({ title, children, onClose }: { title: string; children: ReactNod
   return <div className="ko-modal-backdrop" onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className="ko-sheet" role="dialog" aria-modal="true" aria-label={title} tabIndex={-1} ref={ref}><div className="ko-sheet-handle" /><div className="ko-sheet-heading"><h2>{title}</h2><button className="ko-icon-button" aria-label="閉じる" onClick={onClose}><X size={22} /></button></div>{children}</div></div>;
 }
 function Bottle({ product, large = false }: { product: Product; large?: boolean }) {
-  const [broken, setBroken] = useState(false);
+  const [failedSource, setFailedSource] = useState<string | null>(null);
+  const imageUrl = resolveProductImageUrl(product.image_url);
   const name = productName(product);
-  return <div className={`ko-product-image${large ? ' large' : ''}`}>{product.image_url && !broken ? <img src={product.image_url} alt={name} loading="lazy" onError={() => setBroken(true)} /> : <div className="ko-product-placeholder"><Wine size={36} strokeWidth={1.4} aria-hidden="true" /><span>画像準備中</span></div>}</div>;
+  return <div className={`ko-product-image${large ? ' large' : ''}`}>{imageUrl && imageUrl !== failedSource ? <img key={imageUrl} src={imageUrl} alt={name} loading="lazy" referrerPolicy="no-referrer" onError={() => setFailedSource(imageUrl)} /> : <div className="ko-product-placeholder"><Wine size={36} strokeWidth={1.4} aria-hidden="true" /><span>画像準備中</span></div>}</div>;
 }
 function Quantity({ value, onChange, disabled = false, label = '数量' }: { value: number; onChange: (value: number) => void; disabled?: boolean; label?: string }) { return <div className="ko-quantity" aria-label={label}><button type="button" aria-label={`${label}を減らす`} disabled={value < 1 || disabled} onClick={() => onChange(Math.max(0, value - 1))}><Minus size={17} /></button><output aria-live="polite">{value}</output><button type="button" aria-label={`${label}を増やす`} disabled={disabled || value >= 9999} onClick={() => onChange(value + 1)}><Plus size={17} /></button></div>; }
 function Status({ status }: { status: string }) { return <span className={`ko-status ${status}`}>{statuses[status] || status}</span>; }

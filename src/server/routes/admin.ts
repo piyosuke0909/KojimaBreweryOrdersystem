@@ -9,11 +9,13 @@ import { orderRoutes } from './orders';
 import { deliveryDates } from '../services/orders';
 import { lineRichMenuRoutes } from './line-rich-menu';
 import { lineNotificationDiagnosticRoutes } from './line-notification-diagnostics';
+import { productImagePreviewRoutes } from './product-image-preview';
 
 export const adminRoutes=new Hono<AppEnv>();
 adminRoutes.onError(routerError);
 adminRoutes.route('/line/rich-menu',lineRichMenuRoutes);
 adminRoutes.route('/line/notification-diagnostics',lineNotificationDiagnosticRoutes);
+adminRoutes.route('/product-image-preview',productImagePreviewRoutes);
 adminRoutes.get('/me',c=>c.json({data:{type:'admin',admin:actor(c)}}));
 adminRoutes.get('/dashboard',async c=>{
   const today=jstDate(new Date()),yesterday=jstDate(new Date(Date.now()-86400000));

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } 
 import { Wine, Boxes, CalendarDays, Check, ChevronLeft, ChevronRight, CircleAlert, Landmark, Loader2, Plus, RefreshCw, Search, Settings2, ShieldCheck, Trash2, Truck, X } from 'lucide-react';
 import { api } from './api';
 import { FieldHelp, navigableRowProps } from './ui';
+import { isGoogleDriveUrl, parseGoogleDriveImage, resolveProductImageUrl } from '../../shared/product-image';
 import RichMenu from './RichMenu';
 import './masters.css';
 
@@ -26,7 +27,7 @@ const fieldGuidance: Record<string, { example?: string; help: string }> = {
   weight_kg: { example: '1.2', help: '内容物と容器を含む1本の重量です。梱包箱の重量と合算し、宅急便のサイズ・送料を計算します。' },
   sales_status: { help: '「販売中」は注文可能、「販売停止」は一時的な販売休止、「注文不可」は注文対象外です。価格未設定など他の条件によっても注文が制限されます。' },
   sort_order: { example: '10', help: '注文画面の商品を小さい数字から順に並べます。同じ番号の場合は商品名順になります。' },
-  image_url: { example: '/assets/products/kojima-700.jpg', help: 'HTTPSの画像URL、または /assets/ などサイト内の画像パスを入力します。空欄の場合は既定の商品表示になります。' },
+  image_url: { example: 'https://drive.google.com/file/d/ファイルID/view', help: 'Googleドライブの画像ファイルの共有リンク、HTTPSの画像URL、または /assets/ などサイト内の画像パスを入力します。Googleドライブは「一般的なアクセス」を「リンクを知っている全員」、権限を「閲覧者」にしてください。フォルダのリンクは使用できません。空欄の場合は「画像準備中」と表示します。' },
   short_description: { example: '米の旨みが広がる、すっきりとした純米酒。', help: '商品カードに表示する短い紹介文です。詳しい説明は下の商品紹介欄に入力します。' },
   description: { example: '愛知県産の米を使い、低温でじっくりと醸しました。', help: '商品の特徴・原料・製法などをお客様に伝える紹介文です。' },
   commitment: { example: '地元の米と水にこだわり、少量ずつ丁寧に仕込みます。', help: '蔵や造り手が大切にしていることを商品紹介に表示します。' },
@@ -160,6 +161,65 @@ function Notice({ error, success }: { error?: string; success?: string }) {
   return null;
 }
 
+function ProductThumbnail({ product }: { product: Row }) {
+  const source = resolveProductImageUrl(product.image_url);
+  const [failedSource, setFailedSource] = useState<string | null>(null);
+  return <span className="master-product-icon">{source && source !== failedSource ? <img key={source} src={source} alt={`${product.name}の商品画像`} loading="lazy" referrerPolicy="no-referrer" onError={() => setFailedSource(source)} /> : <Wine size={23} />}</span>;
+}
+
+type ImagePreviewState = { source: string; status: 'idle' | 'loading' | 'ready' | 'error'; url?: string; error?: string };
+function ProductImagePreview({ value }: { value: string }) {
+  const source = value.trim();
+  const [preview, setPreview] = useState<ImagePreviewState>({ source, status: 'idle' });
+  const requestVersion = useRef(0), controller = useRef<AbortController | null>(null), objectUrl = useRef<string | null>(null);
+  const releaseObjectUrl = () => { if (objectUrl.current) { URL.revokeObjectURL(objectUrl.current); objectUrl.current = null; } };
+  useEffect(() => {
+    requestVersion.current += 1; controller.current?.abort(); releaseObjectUrl();
+    setPreview({ source, status: 'idle' });
+    return () => { requestVersion.current += 1; controller.current?.abort(); releaseObjectUrl(); };
+  }, [source]);
+  const current = preview.source === source ? preview : null;
+  async function check() {
+    if (!source) return;
+    const version = ++requestVersion.current;
+    controller.current?.abort(); releaseObjectUrl();
+    const requestController = new AbortController(); controller.current = requestController;
+    setPreview({ source, status: 'loading' });
+    try {
+      let url: string;
+      if (isGoogleDriveUrl(source)) {
+        if (!parseGoogleDriveImage(source)) throw new Error('Googleドライブの画像ファイルの共有リンクを入力してください。フォルダのリンクは使用できません。');
+        const response = await fetch('/api/admin/product-image-preview', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ image_url: source }), signal: requestController.signal });
+        if (!response.ok) {
+          let message = '画像を確認できませんでした。Googleドライブの共有設定と画像ファイルをご確認ください。';
+          try { const body = await response.json() as { error?: { message?: unknown } }; if (typeof body.error?.message === 'string') message = body.error.message; } catch { /* Keep the safe explanation when the server response is not JSON. */ }
+          throw new Error(message);
+        }
+        if (!response.headers.get('Content-Type')?.toLowerCase().startsWith('image/')) throw new Error('画像ファイルを確認できませんでした。画像ファイルの共有リンクをご確認ください。');
+        const blob = await response.blob();
+        if (version !== requestVersion.current || requestController.signal.aborted) return;
+        url = URL.createObjectURL(blob); objectUrl.current = url;
+      } else {
+        const internal = source.startsWith('/') && !source.startsWith('//') && !source.includes('\\');
+        let https = false;
+        try { const parsed = new URL(source); https = parsed.protocol === 'https:' && !parsed.username && !parsed.password; } catch { /* Internal paths do not need an absolute URL. */ }
+        if (!internal && !https) throw new Error('Googleドライブの共有リンク、HTTPSの画像URL、またはサイト内の画像パスを入力してください。');
+        url = resolveProductImageUrl(source);
+      }
+      if (version === requestVersion.current && !requestController.signal.aborted) setPreview({ source, status: 'loading', url });
+    } catch (error) {
+      if (version === requestVersion.current && !requestController.signal.aborted) setPreview({ source, status: 'error', error: errorText(error) });
+    }
+  }
+  if (!source) return null;
+  return <div className="master-image-preview">
+    <button type="button" className="admin-btn secondary" disabled={current?.status === 'loading'} onClick={() => void check()}>{current?.status === 'loading' ? <Loader2 size={16} className="master-spin" /> : null}画像を確認</button>
+    {current?.status === 'loading' && <span className="admin-muted" role="status">画像を確認しています…</span>}
+    {current?.url && current.status !== 'error' && <img key={current.url} src={current.url} alt="商品画像のプレビュー" referrerPolicy="no-referrer" onLoad={() => setPreview(old => old.source === source && old.url === current.url ? { ...old, status: 'ready' } : old)} onError={() => setPreview(old => old.source === source && old.url === current.url ? { source, status: 'error', error: '画像を読み込めません。URL、共有設定、画像ファイルをご確認ください。' } : old)} />}
+    {current?.status === 'error' && <p className="master-image-preview-error" role="alert">{current.error}</p>}
+  </div>;
+}
+
 function Fields({ fields, value, setValue, lockedKey }: { fields: Field[]; value: Row; setValue: (v: Row) => void; lockedKey?: string }) {
   return <div className="admin-form-grid">{fields.map(field => {
     const id = `master-${field.key}`;
@@ -185,6 +245,7 @@ function Fields({ fields, value, setValue, lockedKey }: { fields: Field[]; value
           : field.type === 'textarea' || field.type === 'json' ? <textarea {...common} placeholder={placeholder ? `例：${placeholder}` : undefined} rows={field.type === 'json' ? 3 : 4} value={typeof val === 'object' ? JSON.stringify(val, null, 2) : val} onChange={e => setValue({ ...value, [field.key]: e.target.value })} />
             : <input {...common} placeholder={placeholder ? `例：${placeholder}` : undefined} type={['volumes', 'cities', 'periods'].includes(field.type || '') ? 'text' : field.type || 'text'} min={field.min} max={field.max} step={field.step || (field.type === 'number' ? '1' : undefined)} pattern={field.pattern} value={displayed} onChange={e => setValue({ ...value, [field.key]: field.type === 'number' && e.target.value !== '' ? Number(e.target.value) : e.target.value })} />}</>}
       {field.hint && <small className="admin-muted">{field.hint}</small>}
+      {field.key === 'image_url' && <ProductImagePreview value={String(val)} />}
     </div>;
   })}</div>;
 }
@@ -237,7 +298,7 @@ const productFields: Field[] = [
   { key: 'volume_ml', label: '容量（ml）', type: 'number', required: true, min: 1 }, { key: 'unit', label: '販売単位', required: true },
   { key: 'standard_price', label: '標準卸価格（税抜・円）', type: 'number', min: 0, hint: '未入力の場合は価格未設定となり、注文できません。' }, { key: 'weight_kg', label: '1本重量（kg）', type: 'number', step: '0.001', min: 0.001, required: true, hint: '内容物と容器を含む重量。送料計算に使用します。' },
   { key: 'sales_status', label: '販売状態', required: true, options: Object.entries(productStatus) }, { key: 'sort_order', label: '表示順', type: 'number', min: 0 },
-  { key: 'image_url', label: '商品画像URL / アセットパス', wide: true }, { key: 'short_description', label: '短い商品説明', wide: true, hint: '注文画面の商品カードに表示されます。' },
+  { key: 'image_url', label: '商品画像URL / アセットパス', wide: true, hint: 'Googleドライブは「一般的なアクセス → リンクを知っている全員 → 閲覧者」で共有してください。' }, { key: 'short_description', label: '短い商品説明', wide: true, hint: '注文画面の商品カードに表示されます。' },
   { key: 'description', label: '商品紹介 ① 商品説明', type: 'textarea' }, { key: 'commitment', label: '商品紹介 ② こだわり', type: 'textarea' },
   { key: 'taste', label: '商品紹介 ③ 味わい', type: 'textarea' }, { key: 'recommended_way', label: '商品紹介 ④ おすすめの飲み方', type: 'textarea' },
   { key: 'is_limited', label: '業者限定商品として表示する', type: 'checkbox' }, { key: 'note', label: '管理用メモ', type: 'textarea' },
@@ -246,7 +307,7 @@ const productConfig: ResourceConfig = {
   path: 'products', title: '商品一覧', singular: '商品', description: '標準卸価格や販売状態、LINEに表示する商品紹介を管理します。',
   fields: productFields, defaults: { name: '', category: '', volume_ml: 700, unit: '本', standard_price: '', weight_kg: '', tax_type: 'excl', sales_status: 'unavailable', is_limited: 0, sort_order: 0 },
   columns: [
-    { key: 'name', label: '商品名', render: r => <div className="master-product-cell"><span className="master-product-icon"><Wine size={23} /></span><span><strong>{r.name}</strong><small className="admin-muted">{r.category || '区分未設定'}{r.is_limited ? ' ・ 業者限定' : ''}</small></span></div> },
+    { key: 'name', label: '商品名', render: r => <div className="master-product-cell"><ProductThumbnail product={r} /><span><strong>{r.name}</strong><small className="admin-muted">{r.category || '区分未設定'}{r.is_limited ? ' ・ 業者限定' : ''}</small></span></div> },
     { key: 'volume_ml', label: '容量', render: r => `${Number(r.volume_ml).toLocaleString()} ml` }, { key: 'standard_price', label: '標準卸価格（税抜）', render: r => <strong>{yen(r.standard_price)}</strong> },
     { key: 'weight_kg', label: '重量', render: r => `${r.weight_kg} kg` }, { key: 'sales_status', label: '販売状態', render: r => <Badge value={r.sales_status} /> },
   ],
