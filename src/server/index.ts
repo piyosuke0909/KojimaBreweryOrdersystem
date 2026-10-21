@@ -11,6 +11,7 @@ import { publicRoutes } from './routes/public';
 import { ApiError } from './services/common';
 import { registerInvitation } from './services/invitations';
 import { notifyWelcome } from './notifications';
+import { recordLineWebhookIdentityChecks } from './services/line-webhook-identity';
 
 export const app = new Hono<AppEnv>();
 app.use('/api/*',async(c,next)=>{
@@ -68,6 +69,8 @@ app.post('/api/line/webhook',async c=>{
   const key=await crypto.subtle.importKey('raw',new TextEncoder().encode(c.env.LINE_CHANNEL_SECRET),{name:'HMAC',hash:'SHA-256'},false,['verify']);
   let bytes:Uint8Array;try{bytes=Uint8Array.from(atob(signature),x=>x.charCodeAt(0));}catch{throw new HTTPException(401);}
   if(!await crypto.subtle.verify('HMAC',key,bytes.slice().buffer as ArrayBuffer,new TextEncoder().encode(raw)))throw new HTTPException(401,{message:'署名が一致しません。'});
+  // Only a precisely formatted, signed diagnostic message records a non-identifying match result.
+  await recordLineWebhookIdentityChecks(c.env,raw);
   // Registration is performed only by the verified invitation flow. A follow event cannot bind a company.
   return c.json({data:{accepted:true}});
 });

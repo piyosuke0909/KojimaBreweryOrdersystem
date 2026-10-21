@@ -106,7 +106,7 @@ export async function resolveActor(env:Bindings,payload:{sub:string,type:'admin'
     const row=await env.DB.prepare("SELECT id,name,role FROM admins WHERE id=? AND status='active'").bind(payload.sub).first<{id:string,name:string,role:string}>();
     return row?{...row,type:'admin'}:null;
   }
-  const row=await env.DB.prepare("SELECT l.line_user_id id,l.company_id,l.staff_name,c.name company_name FROM line_users l JOIN companies c ON c.id=l.company_id WHERE l.line_user_id=? AND l.status='active' AND c.status='active'").bind(payload.sub).first<{id:string,company_id:string,staff_name:string,company_name:string}>();
+  const row=await env.DB.prepare("SELECT l.line_user_id id,l.company_id,l.staff_name,c.name company_name FROM line_users l JOIN companies c ON c.id=l.company_id WHERE l.line_user_id=? AND l.status='active' AND c.status='active' AND c.deleted_at IS NULL").bind(payload.sub).first<{id:string,company_id:string,staff_name:string,company_name:string}>();
   return row?{...row,type:'customer',name:row.staff_name}:null;
 }
 export const requireActor = (type?:'admin'|'customer') => createMiddleware<AppEnv>(async(c,next)=>{
@@ -177,7 +177,7 @@ authRoutes.post('/demo/admin',async c=>{
 authRoutes.post('/demo/customer',async c=>{
   if(!demoEnabled(c.env,c.req.url))fail(403,'デモログインは開発環境専用です。');
   const body=z.object({company_id:z.string().max(100).optional()}).parse(await c.req.json().catch(()=>({})));
-  const company=await c.env.DB.prepare("SELECT id FROM companies WHERE id=? AND status='active'").bind(body.company_id??'company-a').first<{id:string}>();
+  const company=await c.env.DB.prepare("SELECT id FROM companies WHERE id=? AND status='active' AND deleted_at IS NULL").bind(body.company_id??'company-a').first<{id:string}>();
   if(!company)fail(400,'有効なデモ取引先がありません。');
   const sub=`DEMO_LINE_USER_${company!.id}`;
   await c.env.DB.prepare("INSERT INTO line_users(id,company_id,line_user_id,staff_name,line_display_name,status,note) VALUES(?,?,?,'デモ担当者','デモ利用者','active','開発環境専用') ON CONFLICT(line_user_id) DO UPDATE SET status='active'").bind(`demo-${company!.id}`,company!.id,sub).run();

@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { migrateTestDatabase } from './helpers/migrate';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { issueInvitation, registerInvitation } from '../src/server/services/invitations';
@@ -40,7 +40,7 @@ let db: SqliteD1;
 const owner = { id: 'test-admin', type: 'admin', role: 'owner', name: '検証管理者' };
 beforeEach(() => {
   db = new SqliteD1();
-  db.sqlite.exec(readFileSync(new URL('../migrations/0001_initial.sql', import.meta.url), 'utf8'));
+  migrateTestDatabase(db.sqlite);
   db.sqlite.exec(`
     INSERT INTO admins(id,login_id,password_hash,name) VALUES('test-admin','test-admin','unused','検証管理者');
     INSERT INTO companies(id,name) VALUES('a','A酒店'),('b','Bホテル');

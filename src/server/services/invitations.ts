@@ -5,7 +5,7 @@ export async function hashToken(token: string) {
 }
 export async function invitationLookup(db: D1Database, token: string, checkCapacity = true) {
   string(token,'招待トークン',true,256);
-  const invitation=await one(db,`SELECT i.*,c.name AS company_name,c.status AS company_status FROM invitations i JOIN companies c ON c.id=i.company_id WHERE token_hash=?`,await hashToken(token));
+  const invitation=await one(db,`SELECT i.*,c.name AS company_name,c.status AS company_status FROM invitations i JOIN companies c ON c.id=i.company_id WHERE token_hash=? AND i.deleted_at IS NULL AND c.deleted_at IS NULL`,await hashToken(token));
   if(!invitation || invitation.status!=='active' || invitation.company_status!=='active' || (invitation.expires_at && Date.parse(invitation.expires_at)<=Date.now())) fail(410,'INVITATION_EXPIRED','この招待は無効、または有効期限を過ぎています。');
   if(checkCapacity && invitation!.max_uses!=null && invitation!.used_count>=invitation!.max_uses) fail(409,'INVITATION_FULL','この招待の登録上限に達しています。管理者へお問い合わせください。');
   return invitation!;
@@ -19,7 +19,7 @@ export async function registerInvitation(db: D1Database, verifiedLine: {sub:stri
   const stamp=now(),id=existing?.id||uid();
   const lineUser={id,company_id:invitation.company_id,line_user_id:verifiedLine.sub,staff_name:name,line_display_name:verifiedLine.name||null,invitation_id:invitation.id,registered_at:stamp,status:'active'};
   const who={id:verifiedLine.sub,type:'customer',company_id:invitation.company_id};
-  const statements=[db.prepare("UPDATE invitations SET used_count=used_count+1 WHERE id=? AND status='active' AND (expires_at IS NULL OR expires_at>?) AND (max_uses IS NULL OR used_count<max_uses)").bind(invitation.id,stamp),assertChanges(db,1,who,'LINE_USER_REGISTER','line_users',id,existing,lineUser,invitation.company_id)];
+  const statements=[db.prepare("UPDATE invitations SET used_count=used_count+1 WHERE id=? AND deleted_at IS NULL AND status='active' AND EXISTS(SELECT 1 FROM companies c WHERE c.id=invitations.company_id AND c.status='active' AND c.deleted_at IS NULL) AND (expires_at IS NULL OR expires_at>?) AND (max_uses IS NULL OR used_count<max_uses)").bind(invitation.id,stamp),assertChanges(db,1,who,'LINE_USER_REGISTER','line_users',id,existing,lineUser,invitation.company_id)];
   if(existing) statements.push(update(db,'line_users',lineUser,"id=? AND status='unlinked'",id),assertChanges(db,1,who,'LINE_USER_RELINK','line_users',id,existing,lineUser,invitation.company_id));
   else statements.push(insert(db,'line_users',lineUser));
   try { await atomic(db,statements); }
@@ -31,6 +31,7 @@ export async function registerInvitation(db: D1Database, verifiedLine: {sub:stri
   return lineUser;
 }
 export async function issueInvitation(db: D1Database, who: Row, companyId: string, input: Row, origin: string) {
+  if(!await one(db,"SELECT id FROM companies WHERE id=? AND status='active' AND deleted_at IS NULL",companyId))fail(409,'COMPANY_INACTIVE','有効な取引先にのみ招待を発行できます。');
   const bytes=crypto.getRandomValues(new Uint8Array(32));
   const token=Array.from(bytes).map(b=>b.toString(16).padStart(2,'0')).join('');
   const id=uid(), stamp=now();

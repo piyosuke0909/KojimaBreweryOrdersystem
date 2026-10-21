@@ -17,10 +17,33 @@ const fields: Record<string,string[]>={
 };
 const required:Record<string,string[]>={companies:['name'],products:['name','volume_ml','weight_kg'],shipping_rules:['name','delivery_method'],delivery_calendar:['date','is_deliverable'],packaging_boxes:['name','supported_volumes_json','max_bottles','length_cm','width_cm','height_cm','box_weight_kg'],yamato_sizes:['size_code','max_three_sides_cm','max_weight_kg'],yamato_rates:['dest_region','size_code','shipping_fee'],shipping_addresses:['name','postal_code','prefecture','city','address_line1','phone'],contracts:['contract_name'],company_info:['company_name','display_name']};
 const defaults:Record<string,Row>={companies:{status:'active'},products:{unit:'本',tax_type:'excl',is_limited:0,sales_status:'unavailable',sort_order:0},shipping_rules:{target_condition_json:'{}',allowed_periods_json:'[]',is_free_shipping:0,status:'active'},packaging_boxes:{allow_mixed:1,priority:0,status:'active'},yamato_sizes:{status:'active'},yamato_rates:{origin_region:'中部',rate_type:'standard',status:'active'},shipping_addresses:{is_default:0,status:'active'},contracts:{status:'active',closing_day:31}};
-const actions:Record<string,string>={companies:'COMPANY',products:'PRODUCT',shipping_rules:'SHIPPING_RULE',delivery_calendar:'CALENDAR',packaging_boxes:'PACKAGING',yamato_sizes:'PACKAGING',yamato_rates:'YAMATO_RATE',shipping_addresses:'ADDRESS',contracts:'CONTRACT',company_info:'COMPANY_INFO',report_settings:'SETTINGS'};
+const actions:Record<string,string>={companies:'COMPANY',products:'PRODUCT',shipping_rules:'SHIPPING_RULE',delivery_calendar:'CALENDAR',packaging_boxes:'PACKAGING',yamato_sizes:'PACKAGING',yamato_rates:'YAMATO_RATE',shipping_addresses:'ADDRESS',contracts:'CONTRACT',company_info:'COMPANY_INFO',report_settings:'SETTINGS',invitations:'INVITE',company_product_prices:'COMPANY_PRICE'};
 const numeric=new Set(['volume_ml','standard_price','max_bottles','priority','shipping_fee','sort_order','closing_day']);
 const decimals=new Set(['weight_kg','length_cm','width_cm','height_cm','box_weight_kg','max_three_sides_cm','max_weight_kg']);
 const boolean=new Set(['is_limited','is_free_shipping','is_deliverable','allow_mixed','is_default','show_issuer_info','show_invoice_reg_no','show_contact_person','show_fax','show_email']);
+
+const softDeleteTables=new Set(['companies','products','shipping_rules','delivery_calendar','packaging_boxes','yamato_sizes','yamato_rates','shipping_addresses','contracts','company_product_prices','invitations']);
+/** Retain foreign keys, document snapshots and actor history while hiding operational data. */
+export async function softDeleteMaster(c:Context<AppEnv>,table:string,id:string,companyId?:string){
+  if(!softDeleteTables.has(table))fail(400,'DELETE_UNSUPPORTED','この設定は削除できません。');
+  const key=table==='delivery_calendar'?'date':table==='yamato_sizes'?'size_code':'id';
+  const row=await one(c.env.DB,`SELECT * FROM ${table} WHERE ${key}=?${companyId?' AND company_id=?':''}`,id,...(companyId?[companyId]:[]));
+  if(!row)fail(404,'NOT_FOUND','データが見つかりません。');
+  if(!row!.deleted_at){
+    const stamp=now(),data:Row={deleted_at:stamp};
+    if(table==='products')data.sales_status='unavailable';
+    else if(table==='invitations')data.status='revoked';
+    else if(table==='company_product_prices')data.status='archived';
+    else if(table==='delivery_calendar')data.is_deliverable=0;
+    else data.status='inactive';
+    if(table==='shipping_addresses')data.is_default=0;
+    if(table==='companies')data.updated_at=stamp;
+    const {token_hash,...safe}=row!;
+    await atomic(c.env.DB,[update(c.env.DB,table,data,`${key}=? AND deleted_at IS NULL${companyId?' AND company_id=?':''}`,id,...(companyId?[companyId]:[])),audit(c.env.DB,actor(c),`${actions[table]||table.toUpperCase()}_DELETE`,table,id,safe,{...safe,...data},companyId??(table==='companies'?id:row!.company_id))]);
+  }
+  return {id,deleted:true,mode:'soft_deleted',message:table==='invitations'?'招待QRを削除しました。登録済みのLINE利用者は引き続き利用できます。':'一覧から削除しました。過去の注文・請求・監査履歴は保持されます。'};
+}
+
 export function cleanMaster(table:string,input:Row,existing?:Row):Row {
   const data:Row=existing?{}:{...(defaults[table]||{})};
   for(const key of fields[table]||[]) if(input[key]!==undefined) {
@@ -66,7 +89,7 @@ export function cleanMaster(table:string,input:Row,existing?:Row):Row {
 }
 export async function saveMaster(c:Context<AppEnv>,table:string,input:Row,id?:string,companyId?:string) {
   const key=table==='delivery_calendar'?'date':table==='yamato_sizes'?'size_code':'id';
-  const before=id?await one(c.env.DB,`SELECT * FROM ${table} WHERE ${key}=?${companyId?' AND company_id=?':''}`,id,...(companyId?[companyId]:[])):null;
+  const before=id?await one(c.env.DB,`SELECT * FROM ${table} WHERE ${key}=?${companyId?' AND company_id=?':''}${softDeleteTables.has(table)?' AND deleted_at IS NULL':''}`,id,...(companyId?[companyId]:[])):null;
   if(id&&!before) fail(404,'NOT_FOUND','データが見つかりません。');
   const data=cleanMaster(table,input,before||undefined);
   if(before && !Object.keys(data).length) fail(400,'INVALID_INPUT','変更する項目を指定してください。');
@@ -74,29 +97,38 @@ export async function saveMaster(c:Context<AppEnv>,table:string,input:Row,id?:st
   if(companyId) data.company_id=companyId;
   if(table==='companies') { data.updated_at=now(); if(!before) data.created_at=now(); }
   const recordId=id||data[key]||uid();
+  if(table==='shipping_addresses'&&data.shipping_rule_id&&!await one(c.env.DB,"SELECT id FROM shipping_rules WHERE id=? AND status='active' AND deleted_at IS NULL",data.shipping_rule_id))fail(422,'SHIPPING_RULE_INACTIVE','有効な配送ルールを選択してください。');
+  if(table==='yamato_rates'&&!await one(c.env.DB,"SELECT size_code FROM yamato_sizes WHERE size_code=? AND status='active' AND deleted_at IS NULL",data.size_code??before?.size_code))fail(422,'SIZE_INACTIVE','有効な配送サイズを選択してください。');
   const statements:D1PreparedStatement[]=[];
+  let restored:Row|null=null;
+  if(!id&&(table==='delivery_calendar'||table==='yamato_sizes')){
+    restored=await one(c.env.DB,`SELECT * FROM ${table} WHERE ${key}=?`,recordId);
+    if(restored&&!restored.deleted_at)fail(409,'MASTER_EXISTS','同じ日付・サイズは登録済みです。既存の設定を編集してください。');
+    if(restored)data.deleted_at=null;
+  }
   if(table==='shipping_addresses' && data.is_default===1) statements.push(c.env.DB.prepare('UPDATE shipping_addresses SET is_default=0 WHERE company_id=?').bind(companyId));
   if(!before) data[key]=recordId;
-  statements.push(before?update(c.env.DB,table,data,`${key}=?`,recordId):insert(c.env.DB,table,data));
-  statements.push(audit(c.env.DB,actor(c),`${actions[table]||table}_${before?'UPDATE':'CREATE'}`,table,String(recordId),before,{...before,...data},companyId));
+  statements.push(before||restored?update(c.env.DB,table,data,`${key}=?`,recordId):insert(c.env.DB,table,data));
+  statements.push(audit(c.env.DB,actor(c),`${actions[table]||table}_${before?'UPDATE':restored?'RESTORE':'CREATE'}`,table,String(recordId),before??restored,{...restored,...before,...data},companyId));
   await atomic(c.env.DB,statements);
   return one(c.env.DB,`SELECT * FROM ${table} WHERE ${key}=?`,recordId);
 }
 export function masterRoutes(router:Hono<AppEnv>) {
   for(const [path,table,order] of [['companies','companies','name'],['products','products','sort_order,name'],['shipping-rules','shipping_rules','name'],['calendar','delivery_calendar','date'],['boxes','packaging_boxes','priority,name'],['sizes','yamato_sizes','max_three_sides_cm'],['rates','yamato_rates','dest_region,size_code']] as const) {
     router.get(`/${path}`,async c=>{
-      const conditions=['1=1'],args:any[]=[];
+      const conditions=['deleted_at IS NULL'],args:any[]=[];
       if(c.req.query('q') && (table==='products'||table==='companies')) {conditions.push(table==='companies'?'(name LIKE ? OR contact_name LIKE ? OR note LIKE ?)':'(name LIKE ? OR note LIKE ?)');args.push(`%${c.req.query('q')}%`,`%${c.req.query('q')}%`);if(table==='companies')args.push(`%${c.req.query('q')}%`);}
       if(c.req.query('status') && table!=='delivery_calendar') {conditions.push(`${table==='products'?'sales_status':'status'}=?`);args.push(c.req.query('status'));}
       if(table==='delivery_calendar') for(const [q,op] of [['from','>='],['to','<=']]) if(c.req.query(q)) {conditions.push(`date${op}?`);args.push(c.req.query(q));}
-      const select=table==='companies'?"companies.*,(SELECT count(*) FROM line_users lu WHERE lu.company_id=companies.id AND lu.status='active') AS line_user_count,(SELECT count(*) FROM shipping_addresses sa WHERE sa.company_id=companies.id AND sa.status='active') AS address_count":'*';
+      const select=table==='companies'?"companies.*,(SELECT count(*) FROM line_users lu WHERE lu.company_id=companies.id AND lu.status='active') AS line_user_count,(SELECT count(*) FROM shipping_addresses sa WHERE sa.company_id=companies.id AND sa.status='active' AND sa.deleted_at IS NULL) AS address_count":'*';
       return paginated(c,table,conditions.join(' AND '),args,order,select,table==='companies'?50:1000);
     });
     router.post(`/${path}`,async c=>c.json({data:await saveMaster(c,table,await body(c))},201));
     router.put(`/${path}/:id`,async c=>c.json({data:await saveMaster(c,table,await body(c),c.req.param('id'))}));
+    router.delete(`/${path}/:id`,async c=>c.json({data:await softDeleteMaster(c,table,c.req.param('id'))}));
     if(path!=='companies') router.get(`/${path}/:id`,async c=>{
       const key=table==='delivery_calendar'?'date':table==='yamato_sizes'?'size_code':'id';
-      const result=await one(c.env.DB,`SELECT * FROM ${table} WHERE ${key}=?`,c.req.param('id'));
+      const result=await one(c.env.DB,`SELECT * FROM ${table} WHERE ${key}=? AND deleted_at IS NULL`,c.req.param('id'));
       if(!result) fail(404,'NOT_FOUND','データが見つかりません。');
       return c.json({data:result});
     });

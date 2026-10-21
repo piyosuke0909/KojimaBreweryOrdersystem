@@ -16,6 +16,7 @@ export const admins = sqliteTable('admins', {
 ]);
 
 export const companies = sqliteTable('companies', {
+  deleted_at: text('deleted_at'),
   id: text('id').primaryKey(),
   name: text('name').notNull(),
   contact_name: text('contact_name'),
@@ -32,6 +33,7 @@ export const companies = sqliteTable('companies', {
 ]);
 
 export const shipping_rules = sqliteTable('shipping_rules', {
+  deleted_at: text('deleted_at'),
   id: text('id').primaryKey(),
   name: text('name').notNull(),
   target_condition_json: text('target_condition_json').notNull().default('{}'),
@@ -49,6 +51,7 @@ export const shipping_rules = sqliteTable('shipping_rules', {
 ]);
 
 export const shipping_addresses = sqliteTable('shipping_addresses', {
+  deleted_at: text('deleted_at'),
   id: text('id').primaryKey(),
   company_id: text('company_id').notNull().references(() => companies.id),
   name: text('name').notNull(),
@@ -71,6 +74,7 @@ export const shipping_addresses = sqliteTable('shipping_addresses', {
 ]);
 
 export const invitations = sqliteTable('invitations', {
+  deleted_at: text('deleted_at'),
   id: text('id').primaryKey(),
   company_id: text('company_id').notNull().references(() => companies.id),
   token_hash: text('token_hash').notNull().unique(),
@@ -105,6 +109,7 @@ export const line_users = sqliteTable('line_users', {
 ]);
 
 export const contracts = sqliteTable('contracts', {
+  deleted_at: text('deleted_at'),
   id: text('id').primaryKey(),
   company_id: text('company_id').notNull().references(() => companies.id),
   contract_name: text('contract_name').notNull(),
@@ -122,6 +127,7 @@ export const contracts = sqliteTable('contracts', {
 ]);
 
 export const products = sqliteTable('products', {
+  deleted_at: text('deleted_at'),
   id: text('id').primaryKey(),
   name: text('name').notNull(),
   category: text('category').notNull(),
@@ -151,6 +157,7 @@ export const products = sqliteTable('products', {
 ]);
 
 export const company_product_prices = sqliteTable('company_product_prices', {
+  deleted_at: text('deleted_at'),
   id: text('id').primaryKey(),
   company_id: text('company_id').notNull().references(() => companies.id),
   product_id: text('product_id').notNull().references(() => products.id),
@@ -172,6 +179,7 @@ export const company_product_prices = sqliteTable('company_product_prices', {
 ]);
 
 export const delivery_calendar = sqliteTable('delivery_calendar', {
+  deleted_at: text('deleted_at'),
   date: text('date').primaryKey(),
   is_deliverable: integer('is_deliverable').notNull().default(1),
   reason: text('reason'),
@@ -182,6 +190,7 @@ export const delivery_calendar = sqliteTable('delivery_calendar', {
 ]);
 
 export const packaging_boxes = sqliteTable('packaging_boxes', {
+  deleted_at: text('deleted_at'),
   id: text('id').primaryKey(),
   name: text('name').notNull(),
   supported_volumes_json: text('supported_volumes_json').notNull(),
@@ -208,6 +217,7 @@ export const packaging_boxes = sqliteTable('packaging_boxes', {
 ]);
 
 export const yamato_sizes = sqliteTable('yamato_sizes', {
+  deleted_at: text('deleted_at'),
   size_code: text('size_code').primaryKey(),
   max_three_sides_cm: real('max_three_sides_cm').notNull(),
   max_weight_kg: real('max_weight_kg').notNull(),
@@ -222,6 +232,7 @@ export const yamato_sizes = sqliteTable('yamato_sizes', {
 ]);
 
 export const yamato_rates = sqliteTable('yamato_rates', {
+  deleted_at: text('deleted_at'),
   id: text('id').primaryKey(),
   origin_region: text('origin_region').notNull().default('中部'),
   dest_region: text('dest_region').notNull(),

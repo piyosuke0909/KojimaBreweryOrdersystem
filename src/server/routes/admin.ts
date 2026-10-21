@@ -2,15 +2,18 @@ import { Hono } from 'hono';
 import type { AppEnv } from '../types';
 import { jstDate } from '../../domain';
 import { actor, assertChanges, atomic, audit, body, date, fail, insert, integer, now, one, paginated, routerError, rows, settings, string, uid, update, type Row } from '../services/common';
-import { masterRoutes, saveMaster } from '../services/masters';
+import { masterRoutes, saveMaster, softDeleteMaster } from '../services/masters';
 import { issueInvitation } from '../services/invitations';
 import { cancelInvoice, findInvoice, invoiceDetail, issueInvoice } from '../services/invoices';
 import { orderRoutes } from './orders';
+import { deliveryDates } from '../services/orders';
 import { lineRichMenuRoutes } from './line-rich-menu';
+import { lineNotificationDiagnosticRoutes } from './line-notification-diagnostics';
 
 export const adminRoutes=new Hono<AppEnv>();
 adminRoutes.onError(routerError);
 adminRoutes.route('/line/rich-menu',lineRichMenuRoutes);
+adminRoutes.route('/line/notification-diagnostics',lineNotificationDiagnosticRoutes);
 adminRoutes.get('/me',c=>c.json({data:{type:'admin',admin:actor(c)}}));
 adminRoutes.get('/dashboard',async c=>{
   const today=jstDate(new Date()),yesterday=jstDate(new Date(Date.now()-86400000));
@@ -24,27 +27,32 @@ masterRoutes(adminRoutes);
 orderRoutes(adminRoutes,true);
 
 async function companyExists(c:any) {
-  const company=await one(c.env.DB,'SELECT * FROM companies WHERE id=?',c.req.param('id'));
+  const company=await one(c.env.DB,'SELECT * FROM companies WHERE id=? AND deleted_at IS NULL',c.req.param('id'));
   if(!company) fail(404,'NOT_FOUND','取引先が見つかりません。');
   return company!;
 }
 adminRoutes.get('/companies/:id',async c=>{
   const company=await companyExists(c),id=company.id;
   const [addresses,prices,contracts,invitations,users]=await Promise.all([
-    rows(c.env.DB,'SELECT * FROM shipping_addresses WHERE company_id=? ORDER BY is_default DESC,name',id),
-    rows(c.env.DB,'SELECT cp.*,p.name AS product_name,p.volume_ml FROM company_product_prices cp JOIN products p ON p.id=cp.product_id WHERE company_id=? ORDER BY cp.valid_from DESC',id),
-    rows(c.env.DB,'SELECT * FROM contracts WHERE company_id=? ORDER BY start_date DESC',id),
-    rows(c.env.DB,'SELECT id,company_id,max_uses,used_count,expires_at,status,created_by,created_at,note FROM invitations WHERE company_id=? ORDER BY created_at DESC',id),
+    rows(c.env.DB,'SELECT * FROM shipping_addresses WHERE company_id=? AND deleted_at IS NULL ORDER BY is_default DESC,name',id),
+    rows(c.env.DB,'SELECT cp.*,p.name AS product_name,p.volume_ml FROM company_product_prices cp JOIN products p ON p.id=cp.product_id WHERE company_id=? AND cp.deleted_at IS NULL ORDER BY cp.valid_from DESC',id),
+    rows(c.env.DB,'SELECT * FROM contracts WHERE company_id=? AND deleted_at IS NULL ORDER BY start_date DESC',id),
+    rows(c.env.DB,'SELECT id,company_id,max_uses,used_count,expires_at,status,created_by,created_at,note FROM invitations WHERE company_id=? AND deleted_at IS NULL ORDER BY created_at DESC',id),
     rows(c.env.DB,'SELECT * FROM line_users WHERE company_id=? ORDER BY registered_at DESC',id)
   ]);
   return c.json({data:{...company,addresses,prices,contracts,invitations,line_users:users}});
 });
 for(const [resource,table] of [['addresses','shipping_addresses'],['contracts','contracts']] as const) {
-  adminRoutes.get(`/companies/:id/${resource}`,async c=>{await companyExists(c);return c.json({data:await rows(c.env.DB,`SELECT * FROM ${table} WHERE company_id=?`,c.req.param('id'))});});
+  adminRoutes.get(`/companies/:id/${resource}`,async c=>{await companyExists(c);return c.json({data:await rows(c.env.DB,`SELECT * FROM ${table} WHERE company_id=? AND deleted_at IS NULL`,c.req.param('id'))});});
   adminRoutes.post(`/companies/:id/${resource}`,async c=>{await companyExists(c);return c.json({data:await saveMaster(c,table,await body(c),undefined,c.req.param('id'))},201);});
   adminRoutes.put(`/companies/:id/${resource}/:childId`,async c=>{await companyExists(c);return c.json({data:await saveMaster(c,table,await body(c),c.req.param('childId'),c.req.param('id'))});});
+  adminRoutes.delete(`/companies/:id/${resource}/:childId`,async c=>{await companyExists(c);return c.json({data:await softDeleteMaster(c,table,c.req.param('childId'),c.req.param('id'))});});
 }
-adminRoutes.get('/companies/:id/prices',async c=>{await companyExists(c);return c.json({data:await rows(c.env.DB,'SELECT cp.*,p.name AS product_name FROM company_product_prices cp JOIN products p ON p.id=cp.product_id WHERE cp.company_id=? ORDER BY valid_from DESC',c.req.param('id'))});});
+adminRoutes.get('/companies/:id/delivery-dates',async c=>{
+  await companyExists(c);const addressId=string(c.req.query('shipping_address_id'),'配送先');
+  const result=await deliveryDates(c.env.DB,c.req.param('id'),addressId);return c.json({data:result.dates});
+});
+adminRoutes.get('/companies/:id/prices',async c=>{await companyExists(c);return c.json({data:await rows(c.env.DB,'SELECT cp.*,p.name AS product_name FROM company_product_prices cp JOIN products p ON p.id=cp.product_id WHERE cp.company_id=? AND cp.deleted_at IS NULL ORDER BY valid_from DESC',c.req.param('id'))});});
 async function savePrices(c:any,input:Row) {
   const company=await companyExists(c),today=jstDate(new Date());
   const priceRows=Array.isArray(input.prices)?input.prices:[input];
@@ -54,19 +62,19 @@ async function savePrices(c:any,input:Row) {
   for(const row of priceRows) {
     const productId=string(row.product_id,'商品');
     if(seen.has(productId)) fail(400,'INVALID_INPUT','同じ商品が重複しています。');seen.add(productId);
-    if(!await one(c.env.DB,'SELECT id FROM products WHERE id=?',productId)) fail(404,'NOT_FOUND','商品が見つかりません。');
+    if(!await one(c.env.DB,'SELECT id FROM products WHERE id=? AND deleted_at IS NULL',productId)) fail(404,'NOT_FOUND','商品が見つかりません。');
     const validFrom=date(row.valid_from||input.valid_from||today,'適用開始日');
     const validTo=row.valid_to?date(row.valid_to,'適用終了日'):null;
     if(validTo && validTo<validFrom) fail(400,'INVALID_INPUT','適用期間が不正です。');
     const available=typeof row.is_available==='boolean'?(row.is_available?1:0):row.is_available??1;
     const reset=row.unit_price===null && available===1;
-    const product=await one(c.env.DB,'SELECT standard_price FROM products WHERE id=?',productId);
+    const product=await one(c.env.DB,'SELECT standard_price FROM products WHERE id=? AND deleted_at IS NULL',productId);
     const data={id:uid(),company_id:company.id,product_id:productId,unit_price:reset?null:integer(row.unit_price??product?.standard_price??0,'販売単価',0,10000000),tax_type:'excl',is_available:integer(available,'取扱可否',0,1),valid_from:validFrom,valid_to:validTo,status:'active',note:row.note||input.note||null};
-    const old=await rows(c.env.DB,"SELECT * FROM company_product_prices WHERE company_id=? AND product_id=? AND status='active'",company.id,productId);
+    const old=await rows(c.env.DB,"SELECT * FROM company_product_prices WHERE company_id=? AND product_id=? AND status='active' AND deleted_at IS NULL",company.id,productId);
     // Keep earlier intervals usable when a future price is scheduled. Same-day replacements remain archived history.
     const previousDay=new Date(new Date(validFrom+'T00:00:00Z').getTime()-86400000).toISOString().slice(0,10);
-    statements.push(c.env.DB.prepare("UPDATE company_product_prices SET status='archived' WHERE company_id=? AND product_id=? AND status='active' AND valid_from>=?").bind(company.id,productId,validFrom));
-    statements.push(c.env.DB.prepare("UPDATE company_product_prices SET valid_to=? WHERE company_id=? AND product_id=? AND status='active' AND valid_from<? AND (valid_to IS NULL OR valid_to>=?)").bind(previousDay,company.id,productId,validFrom,validFrom));
+    statements.push(c.env.DB.prepare("UPDATE company_product_prices SET status='archived' WHERE company_id=? AND product_id=? AND status='active' AND deleted_at IS NULL AND valid_from>=?").bind(company.id,productId,validFrom));
+    statements.push(c.env.DB.prepare("UPDATE company_product_prices SET valid_to=? WHERE company_id=? AND product_id=? AND status='active' AND deleted_at IS NULL AND valid_from<? AND (valid_to IS NULL OR valid_to>=?)").bind(previousDay,company.id,productId,validFrom,validFrom));
     if(!reset) statements.push(insert(c.env.DB,'company_product_prices',data));
     statements.push(audit(c.env.DB,actor(c),'COMPANY_PRICE_UPDATE','company_product_prices',data.id,old,{...data,reset_to_standard:reset},company.id));saved.push({...data,reset_to_standard:reset});
   }
@@ -74,10 +82,30 @@ async function savePrices(c:any,input:Row) {
 }
 adminRoutes.post('/companies/:id/prices',async c=>{const data=await savePrices(c,await body(c));return c.json({data:data[0]},201);});
 adminRoutes.put('/companies/:id/prices',async c=>c.json({data:await savePrices(c,await body(c))}));
-adminRoutes.get('/companies/:id/invitations',async c=>{await companyExists(c);return c.json({data:await rows(c.env.DB,'SELECT id,company_id,max_uses,used_count,expires_at,status,created_by,created_at,note FROM invitations WHERE company_id=? ORDER BY created_at DESC',c.req.param('id'))});});
+adminRoutes.put('/companies/:id/prices/:childId',async c=>{
+  await companyExists(c);const before=await one(c.env.DB,'SELECT * FROM company_product_prices WHERE id=? AND company_id=? AND deleted_at IS NULL',c.req.param('childId'),c.req.param('id'));
+  if(!before)fail(404,'NOT_FOUND','販売単価が見つかりません。');
+  const input=await body(c),data:Row={};
+  if(input.product_id!==undefined&&input.product_id!==before!.product_id)fail(400,'INVALID_INPUT','商品の変更は新しい販売単価として登録してください。');
+  if(input.unit_price!==undefined)data.unit_price=integer(input.unit_price,'販売単価',0,10000000);
+  if(input.is_available!==undefined)data.is_available=integer(typeof input.is_available==='boolean'?(input.is_available?1:0):input.is_available,'取扱可否',0,1);
+  if(input.valid_from!==undefined)data.valid_from=date(input.valid_from,'適用開始日');
+  if(input.valid_to!==undefined)data.valid_to=input.valid_to?date(input.valid_to,'適用終了日'):null;
+  if(input.note!==undefined)data.note=input.note===null?null:string(input.note,'備考',false,2000);
+  const merged={...before,...data};
+  if(merged.valid_to&&merged.valid_to<merged.valid_from)fail(400,'INVALID_INPUT','適用期間が不正です。');
+  if(!Object.keys(data).length)fail(400,'INVALID_INPUT','変更する項目を指定してください。');
+  if(merged.status==='active'&&await one(c.env.DB,"SELECT id FROM company_product_prices WHERE company_id=? AND product_id=? AND id!=? AND deleted_at IS NULL AND status='active' AND (valid_to IS NULL OR valid_to>=?) AND (? IS NULL OR valid_from<=?)",merged.company_id,merged.product_id,before!.id,merged.valid_from,merged.valid_to,merged.valid_to))fail(409,'PRICE_OVERLAP','他の販売単価と適用期間が重なっています。');
+  await atomic(c.env.DB,[update(c.env.DB,'company_product_prices',data,'id=? AND company_id=? AND deleted_at IS NULL',before!.id,before!.company_id),audit(c.env.DB,actor(c),'COMPANY_PRICE_EDIT','company_product_prices',before!.id,before,merged,before!.company_id)]);
+  return c.json({data:merged});
+});
+for(const [resource,table]of [['prices','company_product_prices'],['invitations','invitations']]as const)adminRoutes.delete(`/companies/:id/${resource}/:childId`,async c=>{
+  await companyExists(c);return c.json({data:await softDeleteMaster(c,table,c.req.param('childId'),c.req.param('id'))});
+});
+adminRoutes.get('/companies/:id/invitations',async c=>{await companyExists(c);return c.json({data:await rows(c.env.DB,'SELECT id,company_id,max_uses,used_count,expires_at,status,created_by,created_at,note FROM invitations WHERE company_id=? AND deleted_at IS NULL ORDER BY created_at DESC',c.req.param('id'))});});
 adminRoutes.post('/companies/:id/invitations',async c=>{const company=await companyExists(c);if(company.status!=='active')fail(409,'COMPANY_INACTIVE','無効な取引先の招待は作成できません。');return c.json({data:await issueInvitation(c.env.DB,actor(c),company.id,await body(c),new URL(c.req.url).origin)},201);});
 adminRoutes.put('/companies/:id/invitations/:childId',async c=>{
-  const before=await one(c.env.DB,'SELECT * FROM invitations WHERE id=? AND company_id=?',c.req.param('childId'),c.req.param('id'));
+  const before=await one(c.env.DB,'SELECT * FROM invitations WHERE id=? AND company_id=? AND deleted_at IS NULL',c.req.param('childId'),c.req.param('id'));
   if(!before) fail(404,'NOT_FOUND','招待が見つかりません。');
   const input=await body(c),data:Row={};
   if(input.max_uses!==undefined) data.max_uses=input.max_uses===null?null:integer(input.max_uses,'登録上限',Math.max(1,before!.used_count),10000);
@@ -89,7 +117,7 @@ adminRoutes.put('/companies/:id/invitations/:childId',async c=>{
   return c.json({data:{...safe,...data}});
 });
 adminRoutes.post('/companies/:id/invitations/:childId/revoke',async c=>{
-  const invitation=await one(c.env.DB,'SELECT id,company_id,status FROM invitations WHERE id=? AND company_id=?',c.req.param('childId'),c.req.param('id'));
+  const invitation=await one(c.env.DB,'SELECT id,company_id,status FROM invitations WHERE id=? AND company_id=? AND deleted_at IS NULL',c.req.param('childId'),c.req.param('id'));
   if(!invitation) fail(404,'NOT_FOUND','招待が見つかりません。');
   await atomic(c.env.DB,[update(c.env.DB,'invitations',{status:'revoked'},'id=?',invitation!.id),audit(c.env.DB,actor(c),'INVITE_REVOKE','invitations',invitation!.id,invitation,{status:'revoked'},invitation!.company_id)]);
   return c.json({data:{id:invitation!.id,status:'revoked'}});

@@ -14,7 +14,7 @@ export async function orderDetail(c: Context<AppEnv>, order: Row) {
     rows(c.env.DB,'SELECT * FROM order_items WHERE order_id=? ORDER BY line_no',order.id),
     rows(c.env.DB,'SELECT * FROM order_packages WHERE order_id=? ORDER BY package_no',order.id),
     rows(c.env.DB,'SELECT * FROM order_revisions WHERE order_id=? ORDER BY revision_no DESC',order.id),
-    rows(c.env.DB,'SELECT * FROM delivery_calendar'),settings(c.env.DB)
+    rows(c.env.DB,'SELECT * FROM delivery_calendar WHERE deleted_at IS NULL'),settings(c.env.DB)
   ]);
   const lockActive=order.edit_locked_by && order.edit_lock_expires_at > now() && order.edit_locked_by!==actor(c).id;
   let deadline: string|null=null;
@@ -28,7 +28,7 @@ export async function editable(c: Context<AppEnv>, order: Row, requireLock = fal
   if (order.is_invoice_locked) fail(409,'INVOICE_LOCKED','請求書発行済みのため変更できません。先に請求を取り消してください。');
   if (order.status==='cancelled') fail(409,'ORDER_NOT_EDITABLE','この注文は変更できません。');
   if (actor(c).type==='customer') {
-    const [calendar,config]=await Promise.all([rows(c.env.DB,'SELECT * FROM delivery_calendar'),settings(c.env.DB)]);
+    const [calendar,config]=await Promise.all([rows(c.env.DB,'SELECT * FROM delivery_calendar WHERE deleted_at IS NULL'),settings(c.env.DB)]);
     if (!canEditOrder(order as any,new Date(),calendar as any,config)) fail(409,'EDIT_DEADLINE','変更・キャンセル期限を過ぎているか、配送準備が開始されています。');
   }
   const lockActive=order.edit_locked_by && order.edit_lock_expires_at>now();
@@ -36,24 +36,24 @@ export async function editable(c: Context<AppEnv>, order: Row, requireLock = fal
   if (requireLock && (!lockActive || order.edit_locked_by!==actor(c).id)) fail(409,'LOCK_REQUIRED','編集ロックの有効期限が切れました。編集画面を開き直してください。');
 }
 export async function deliveryDates(db: D1Database, companyId: string, addressId: string) {
-  const address=await one(db,"SELECT * FROM shipping_addresses WHERE id=? AND company_id=? AND status='active'",addressId,companyId);
+  const address=await one(db,"SELECT * FROM shipping_addresses WHERE id=? AND company_id=? AND status='active' AND deleted_at IS NULL",addressId,companyId);
   if (!address) fail(404,'ADDRESS_NOT_FOUND','配送先が見つかりません。');
-  let rule=address!.shipping_rule_id ? await one(db,"SELECT * FROM shipping_rules WHERE id=? AND status='active'",address!.shipping_rule_id) : null;
+  let rule=address!.shipping_rule_id ? await one(db,"SELECT * FROM shipping_rules WHERE id=? AND status='active' AND deleted_at IS NULL",address!.shipping_rule_id) : null;
   if(address!.shipping_rule_id && !rule) fail(422,'SHIPPING_RULE_INACTIVE','配送先に設定された配送ルールが無効です。管理者にお問い合わせください。');
   if (!rule) {
-    const rules=await rows(db,"SELECT * FROM shipping_rules WHERE status='active'");
+    const rules=await rows(db,"SELECT * FROM shipping_rules WHERE status='active' AND deleted_at IS NULL");
     rule=rules.find(r=>{
       if(r.delivery_method!=='own_delivery') return false;
       try { const v=JSON.parse(r.target_condition_json||'{}'); return (Array.isArray(v)?v:(v.cities||v.city||[])).includes(address!.city); } catch { return false; }
     }) || rules.find(r=>r.delivery_method==='yamato') || null;
   }
   if (!rule) fail(422,'SHIPPING_RULE_MISSING','配送ルールが未設定です。管理者にお問い合わせください。');
-  const [calendar,config]=await Promise.all([rows(db,'SELECT * FROM delivery_calendar'),settings(db)]);
+  const [calendar,config]=await Promise.all([rows(db,'SELECT * FROM delivery_calendar WHERE deleted_at IS NULL'),settings(db)]);
   const dates=getDeliveryDates(new Date(),rule as any,calendar as any,config);
   return {address:address!,rule:rule!,calendar,config,dates};
 }
 export async function quote(c: Context<AppEnv>, input: Row, companyId: string, oldOrder?: Row) {
-  const company=await one(c.env.DB,"SELECT * FROM companies WHERE id=? AND status='active'",companyId);
+  const company=await one(c.env.DB,"SELECT * FROM companies WHERE id=? AND status='active' AND deleted_at IS NULL",companyId);
   if (!company) fail(404,'COMPANY_NOT_FOUND','有効な取引先が見つかりません。');
   const addressId=string(input.shipping_address_id,'配送先');
   const delivery=await deliveryDates(c.env.DB,companyId,addressId);
@@ -74,7 +74,7 @@ export async function quote(c: Context<AppEnv>, input: Row, companyId: string, o
     for(const item of await rows(c.env.DB,'SELECT * FROM order_items WHERE order_id=?',oldOrder.id)) if(!originals.has(item.product_id)) originals.set(item.product_id,item);
   }
   const today=jstDate(new Date());
-  const products=await rows(c.env.DB,`SELECT p.*,cpp.unit_price AS company_price,cpp.is_available AS company_available FROM products p LEFT JOIN company_product_prices cpp ON cpp.id=(SELECT cp.id FROM company_product_prices cp WHERE cp.product_id=p.id AND cp.company_id=? AND cp.status='active' AND cp.valid_from<=? AND (cp.valid_to IS NULL OR cp.valid_to>=?) ORDER BY cp.valid_from DESC,cp.id DESC LIMIT 1)`,companyId,today,today);
+  const products=await rows(c.env.DB,`SELECT p.*,cpp.unit_price AS company_price,cpp.is_available AS company_available FROM products p LEFT JOIN company_product_prices cpp ON cpp.id=(SELECT cp.id FROM company_product_prices cp WHERE cp.product_id=p.id AND cp.company_id=? AND cp.status='active' AND cp.deleted_at IS NULL AND cp.valid_from<=? AND (cp.valid_to IS NULL OR cp.valid_to>=?) ORDER BY cp.valid_from DESC,cp.id DESC LIMIT 1) WHERE p.deleted_at IS NULL OR p.id IN (SELECT value FROM json_each(?))`,companyId,today,today,JSON.stringify([...originals.keys()]));
   const seen=new Set<string>();
   const items=input.items.map((item: Row,index: number)=>{
     const productId=string(item.product_id,'商品');
@@ -89,7 +89,7 @@ export async function quote(c: Context<AppEnv>, input: Row, companyId: string, o
     if(price==null) fail(422,'PRICE_NOT_SET',`${product!.name}の単価が未設定です。`);
     return {product_id:productId,line_no:index+1,snap_product_name:original?.snap_product_name || product!.name,snap_category:original?.snap_category || product!.category,snap_volume_ml:original?.snap_volume_ml || product!.volume_ml,snap_unit:original?.snap_unit || product!.unit,unit_price:price,quantity,subtotal:price*quantity,weight_kg:product!.weight_kg};
   });
-  const [boxes,sizes,rates]=await Promise.all([rows(c.env.DB,"SELECT * FROM packaging_boxes WHERE status='active'"),rows(c.env.DB,"SELECT * FROM yamato_sizes WHERE status='active'"),rows(c.env.DB,"SELECT * FROM yamato_rates WHERE status='active'")]);
+  const [boxes,sizes,rates]=await Promise.all([rows(c.env.DB,"SELECT * FROM packaging_boxes WHERE status='active' AND deleted_at IS NULL"),rows(c.env.DB,"SELECT * FROM yamato_sizes WHERE status='active' AND deleted_at IS NULL"),rows(c.env.DB,"SELECT * FROM yamato_rates WHERE status='active' AND deleted_at IS NULL")]);
   const sameAddress=oldOrder?.shipping_address_id===addressId;
   const shippingMethod=sameAddress ? (oldOrder.snap_shipping_method==='自社配達'?'own_delivery':'yamato') : delivery.rule.delivery_method;
   // Quantity-only edits retain the ordered destination, even after the address master is moved.
@@ -132,9 +132,17 @@ export async function createOrder(c: Context<AppEnv>, input: Row) {
   }
   date(input.desired_delivery_date,'到着希望日');
   const q=await quote(c,input,companyId);
-  const stamp=now(), id=`O${jstDate(new Date()).replaceAll('-','')}${uid().replaceAll('-','').slice(0,8).toUpperCase()}`;
-  const contract=await one(c.env.DB,"SELECT id FROM contracts WHERE company_id=? AND status='active' AND (start_date IS NULL OR start_date<=?) AND (end_date IS NULL OR end_date>=?) ORDER BY start_date DESC LIMIT 1",companyId,jstDate(new Date()),jstDate(new Date()));
-  const order={id,request_id:requestId,company_id:companyId,contract_id:contract?.id||null,ordered_by_line_user_id:who.type==='customer'?who.id:null,ordered_by_name:who.name,ordered_at:stamp,updated_at:stamp,status:'received',...snapshotFields(input,q),version:1,is_invoice_locked:0,edit_lock_status:'unlocked'};
+  let notificationRecipient:string|null=null;
+  if(who.type==='customer'&&(input.ordered_by_line_user_id!=null||input.is_test_order!==undefined))fail(403,'ADMIN_ONLY','管理者専用の注文設定です。');
+  if(input.is_test_order!==undefined&&typeof input.is_test_order!=='boolean')fail(400,'INVALID_INPUT','テスト注文の指定が不正です。');
+  if(who.type==='admin'&&input.ordered_by_line_user_id){
+    notificationRecipient=string(input.ordered_by_line_user_id,'LINE通知先',true,256);
+    if(!await one(c.env.DB,"SELECT id FROM line_users WHERE line_user_id=? AND company_id=? AND status='active'",notificationRecipient,companyId))fail(422,'INVALID_NOTIFICATION_RECIPIENT','同じ取引先に登録された有効なLINE利用者を選択してください。');
+  }
+  const isTest=who.type==='admin'&&input.is_test_order===true;
+  const stamp=now(), id=`${isTest?'TEST-':''}O${jstDate(new Date()).replaceAll('-','')}${uid().replaceAll('-','').slice(0,8).toUpperCase()}`;
+  const contract=await one(c.env.DB,"SELECT id FROM contracts WHERE company_id=? AND status='active' AND deleted_at IS NULL AND (start_date IS NULL OR start_date<=?) AND (end_date IS NULL OR end_date>=?) ORDER BY start_date DESC LIMIT 1",companyId,jstDate(new Date()),jstDate(new Date()));
+  const order={id,request_id:requestId,company_id:companyId,contract_id:contract?.id||null,ordered_by_line_user_id:who.type==='customer'?who.id:notificationRecipient,ordered_by_name:who.name,ordered_at:stamp,updated_at:stamp,status:'received',...snapshotFields(input,q),version:1,is_invoice_locked:0,edit_lock_status:'unlocked'};
   try {
     await atomic(c.env.DB,[insert(c.env.DB,'orders',order),...itemStatements(c.env.DB,id,q),insert(c.env.DB,'order_requests',{request_id:requestId,line_user_id:who.id,company_id:companyId,issued_at:stamp,processed_at:stamp,order_id:id,status:'completed'}),audit(c.env.DB,who,'ORDER_CREATE','orders',id,null,{...order,items:q.items},companyId)]);
   } catch(error) {

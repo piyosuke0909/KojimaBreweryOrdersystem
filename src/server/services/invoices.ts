@@ -18,7 +18,7 @@ export async function issueInvoice(c:Context<AppEnv>,input:Row,previous?:Row) {
   const companyId=previous?.company_id || string(input.company_id,'取引先');
   const start=date(input.period_start || previous?.period_start,'対象期間開始'), end=date(input.period_end || previous?.period_end,'対象期間終了');
   if(start>end) fail(400,'INVALID_PERIOD','対象期間が不正です。');
-  const company=await one(c.env.DB,"SELECT * FROM companies WHERE id=? AND status='active'",companyId);
+  const company=await one(c.env.DB,"SELECT * FROM companies WHERE id=? AND status='active' AND deleted_at IS NULL",companyId);
   if(!company) fail(404,'NOT_FOUND','有効な取引先が見つかりません。');
   let orderIds:string[]|undefined=input.order_ids;
   if(orderIds && (!Array.isArray(orderIds) || orderIds.length<1 || orderIds.length>500 || orderIds.some(id=>typeof id!=='string') || new Set(orderIds).size!==orderIds.length)) fail(400,'INVALID_INPUT','請求対象の注文を正しく指定してください。');
@@ -26,7 +26,7 @@ export async function issueInvoice(c:Context<AppEnv>,input:Row,previous?:Row) {
   const query=`SELECT * FROM orders WHERE company_id=? AND desired_delivery_date>=? AND desired_delivery_date<=? AND status!='cancelled' AND is_invoice_locked=0${orderIds?' AND id IN (SELECT value FROM json_each(?))':''} ORDER BY desired_delivery_date,id`;
   const orders=await rows(c.env.DB,query,companyId,start,end,...(orderIds?[JSON.stringify(orderIds)]:[]));
   if(!orders.length || (orderIds && orderIds.length!==orders.length)) fail(422,'INVALID_INVOICE_ORDERS','対象期間内の未請求注文を選択してください。キャンセル済み・請求済みの注文は含められません。');
-  const [config,issuer,report,contract]=await Promise.all([settings(c.env.DB),one(c.env.DB,'SELECT * FROM company_info WHERE id=1'),one(c.env.DB,'SELECT * FROM report_settings WHERE id=1'),one(c.env.DB,"SELECT * FROM contracts WHERE company_id=? AND status='active' ORDER BY start_date DESC LIMIT 1",companyId)]);
+  const [config,issuer,report,contract]=await Promise.all([settings(c.env.DB),one(c.env.DB,'SELECT * FROM company_info WHERE id=1'),one(c.env.DB,'SELECT * FROM report_settings WHERE id=1'),one(c.env.DB,"SELECT * FROM contracts WHERE company_id=? AND status='active' AND deleted_at IS NULL ORDER BY start_date DESC LIMIT 1",companyId)]);
   const details=await rows(c.env.DB,'SELECT * FROM order_items WHERE order_id IN (SELECT value FROM json_each(?)) ORDER BY order_id,line_no',JSON.stringify(orders.map(o=>o.id)));
   const subtotal=orders.reduce((sum,o)=>sum+o.items_subtotal+o.shipping_fee,0);
   // Invoice-level rounding is applied once to each tax rate; order/item modes preserve their recorded tax.

@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { migrateTestDatabase } from './helpers/migrate';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { app } from '../src/server';
@@ -32,7 +32,7 @@ let db: SqliteD1, env: Bindings, pending: Promise<unknown>[];
 
 beforeEach(() => {
   db = new SqliteD1();
-  db.sqlite.exec(readFileSync(new URL('../migrations/0001_initial.sql', import.meta.url), 'utf8'));
+  migrateTestDatabase(db.sqlite);
   db.sqlite.exec(`
     INSERT INTO admins(id,login_id,password_hash,name,role) VALUES('owner','owner','unused','管理者','owner');
     INSERT INTO companies(id,name) VALUES('a','A商店'),('b','Bホテル');

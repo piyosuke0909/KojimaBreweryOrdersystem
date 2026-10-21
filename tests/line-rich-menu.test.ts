@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { migrateTestDatabase } from './helpers/migrate';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { app } from '../src/server';
@@ -203,7 +204,7 @@ describe('LINE rich menu registration uses fixed destinations and verified image
 
 class SQLiteBinding {
   sqlite=new DatabaseSync(':memory:');
-  constructor(){this.sqlite.exec(readFileSync(new URL('../migrations/0001_initial.sql',import.meta.url),'utf8'));}
+  constructor(){migrateTestDatabase(this.sqlite);}
   prepare(sql:string){
     const statement=(args:any[]=[])=>({bind:(...next:any[])=>statement(next),run:async()=>({meta:{changes:Number(this.sqlite.prepare(sql).run(...args).changes)}}),first:async()=>this.sqlite.prepare(sql).get(...args)??null});
     return statement();

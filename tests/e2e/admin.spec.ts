@@ -1,7 +1,16 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import { mkdir, readFile } from 'node:fs/promises';
 
 test.beforeAll(() => mkdir('.local/screenshots', { recursive: true }).then(() => {}));
+
+async function openFirstOrder(page: Page) {
+  const row = page.locator('tbody tr[data-row-navigation]').first();
+  await expect(row).toBeVisible();
+  const href = await row.locator('a[href^="/admin/orders/"]').first().getAttribute('href');
+  expect(href).toBeTruthy();
+  await row.locator('td').nth(1).click();
+  await expect(page).toHaveURL(new RegExp(`${href}$`));
+}
 
 test('管理者ログインからダッシュボードと業務画面を開ける', async ({ page }) => {
   const errors: string[] = [];
@@ -23,7 +32,7 @@ test('管理者ログインからダッシュボードと業務画面を開け�
     await expect(page.getByRole('alert')).toHaveCount(0);
   }
   await nav.getByRole('link', { name: '注文管理', exact: true }).click();
-  await page.getByRole('link', { name: /^詳細/ }).first().click();
+  await openFirstOrder(page);
   await expect(page.getByText(/商品明細|注文明細/).first()).toBeVisible();
   expect(errors).toEqual([]);
 });
@@ -33,7 +42,7 @@ test('納品書をプレビューし、日本語PDFファイルをダウンロ�
   await page.getByRole('button', { name: 'デモ環境を開く' }).click();
   await expect(page.getByRole('heading', { name: 'ダッシュボード', exact: true })).toBeVisible();
   await page.getByRole('navigation', { name: '管理メニュー' }).getByRole('link', { name: '注文管理', exact: true }).click();
-  await page.getByRole('link', { name: /^詳細/ }).first().click();
+  await openFirstOrder(page);
   await page.getByRole('link', { name: '納品書プレビュー', exact: true }).click();
   await expect(page.getByRole('heading', { name: '納品書', exact: true })).toBeVisible();
   const downloadReady = page.waitForEvent('download');
