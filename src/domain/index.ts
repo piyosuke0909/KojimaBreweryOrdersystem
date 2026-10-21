@@ -72,29 +72,38 @@ function assertDate(date: string): void {
 }
 function dayAfter(date: string, delta: number): string {
   assertDate(date);
-  return new Date(new Date(`${date}T00:00:00.000Z`).getTime() + delta * 86_400_000).toISOString().slice(0, 10);
+  const result = new Date(new Date(`${date}T00:00:00.000Z`).getTime() + delta * 86_400_000);
+  if (!Number.isFinite(result.getTime())) throw new DomainError('INVALID_DATE', '計算後の日付が扱える範囲を超えています。');
+  const value = result.toISOString().slice(0, 10);
+  assertDate(value);
+  return value;
 }
 export function jstDate(now: Date | string): string {
   const n = new Date(now).getTime();
   if (!Number.isFinite(n)) throw new DomainError('INVALID_DATE', '日時が不正です。');
   return new Date(n + 9 * 3_600_000).toISOString().slice(0, 10);
 }
-/** A date absent from the maintained calendar is unavailable, including weekdays. */
+/** Ordinary dates, including weekends, are open unless explicitly marked as closed. */
 export function isBusinessDay(date: string, calendar: CalendarDay[]): boolean {
   assertDate(date);
   const row = calendar.find((day) => day.date === date);
-  return row !== undefined && enabled(row.is_deliverable);
+  return row === undefined || enabled(row.is_deliverable);
 }
 export function addBusinessDays(date: string, count: number, calendar: CalendarDay[]): string {
   assertDate(date);
   if (!Number.isSafeInteger(count)) throw new DomainError('INVALID_NUMBER', '営業日数は整数で指定してください。');
   if (count === 0) return date;
-  const dates = calendar.filter((day) => enabled(day.is_deliverable) && (count > 0 ? day.date > date : day.date < date)).map((day) => day.date).sort();
-  const unique = [...new Set(dates)];
-  const result = count > 0 ? unique[count - 1] : unique[unique.length + count];
-  if (!result) throw new DomainError('CALENDAR_INCOMPLETE', '必要な営業日が配送カレンダーに登録されていません。');
-  assertDate(result);
-  return result;
+  const closed = [...new Set(calendar.filter((day) => !enabled(day.is_deliverable)).map((day) => { assertDate(day.date); return day.date; }))];
+  const direction = Math.sign(count);
+  let previous = date, result = dayAfter(date, count);
+  // Advance past closures encountered in each interval. Every closure is counted once,
+  // so a sparse calendar needs no artificial range of pre-created operating dates.
+  for (;;) {
+    const skipped = closed.filter((day) => direction > 0 ? day > previous && day <= result : day < previous && day >= result).length;
+    if (skipped === 0) return result;
+    previous = result;
+    result = dayAfter(result, direction * skipped);
+  }
 }
 function withinPeriods(date: string, rule: DeliveryRule): boolean {
   let periods: { start_day: number; end_day: number }[];
@@ -108,7 +117,8 @@ export function getDeliveryDates(now: Date | string, rule: DeliveryRule, calenda
   if (rule.status && rule.status !== 'active') return [];
   const lead = integer(numeric(settings.min_lead_business_days, 4, '最短リードタイム'), '最短リードタイム');
   const earliest = addBusinessDays(jstDate(now), lead, calendar);
-  return [...new Set(calendar.filter((row) => row.date >= earliest && enabled(row.is_deliverable) && withinPeriods(row.date, rule)).map((row) => { assertDate(row.date); return row.date; }))].sort();
+  // Bound the booking window without requiring administrators to create open dates.
+  return Array.from({ length: 90 }, (_, index) => dayAfter(earliest, index)).filter((date) => isBusinessDay(date, calendar) && withinPeriods(date, rule));
 }
 /** Deadline includes its exact cutoff instant; the following millisecond is too late. */
 export function cancellationDeadline(deliveryDate: string, calendar: CalendarDay[], settings: CalendarSettings = {}): string {
@@ -130,9 +140,17 @@ export interface PackingItem { product_id: string; volume_ml: number; weight_kg:
 export interface PackagingBox { id: string; name?: string; supported_volumes_json: string; max_bottles: number; length_cm: number; width_cm: number; height_cm: number; box_weight_kg: number; allow_mixed: Flag; priority: number; valid_from?: string | null; valid_to?: string | null; status?: string }
 export interface YamatoSize { size_code: string; max_three_sides_cm: number; max_weight_kg: number; valid_from?: string | null; valid_to?: string | null; status?: string }
 export interface YamatoRate { id?: string; origin_region?: string; dest_region: string; size_code: string; shipping_fee: number; rate_type: 'standard' | 'contract'; valid_from?: string | null; valid_to?: string | null; status?: string }
-export interface PackingSettings { dest_region: string; date?: string; origin_region?: string; delivery_method?: 'yamato' | 'own_delivery'; multi_parcel_discount_enabled?: Flag; multi_parcel_discount_amount?: Numeric }
+export interface ShippingFeatureSettings { packing_enabled?: Flag; yamato_sizes_enabled?: Flag; yamato_rates_enabled?: Flag }
+export interface ShippingFeatures { packing_enabled: boolean; yamato_sizes_enabled: boolean; yamato_rates_enabled: boolean }
+/** Size assignment requires a package; automatic fares require an assigned size. */
+export function getShippingFeatures(settings: ShippingFeatureSettings = {}): ShippingFeatures {
+  const packing_enabled = enabled(settings.packing_enabled, true);
+  const yamato_sizes_enabled = packing_enabled && enabled(settings.yamato_sizes_enabled, true);
+  return { packing_enabled, yamato_sizes_enabled, yamato_rates_enabled: yamato_sizes_enabled && enabled(settings.yamato_rates_enabled, true) };
+}
+export interface PackingSettings extends ShippingFeatureSettings { dest_region: string; date?: string; origin_region?: string; delivery_method?: 'yamato' | 'own_delivery'; multi_parcel_discount_enabled?: Flag; multi_parcel_discount_amount?: Numeric }
 export interface PackageItem { product_id: string; quantity: number; line_no?: number }
-export interface CalculatedPackage { package_no: number; packaging_box_id: string; box_name: string; size_code: string; three_sides_cm: number; total_weight_kg: number; shipping_fee: number; rate_type: 'standard' | 'contract'; items: PackageItem[] }
+export interface CalculatedPackage { package_no: number; packaging_box_id: string; box_name: string; size_code: string | null; three_sides_cm: number; total_weight_kg: number; shipping_fee: number | null; rate_type: 'standard' | 'contract' | null; items: PackageItem[] }
 interface Box extends PackagingBox { volumes: number[]; sides: number; maxWeight: number }
 interface Plan { box: Box; counts: number[] }
 function activeAt(row: { status?: string; valid_from?: string | null; valid_to?: string | null }, date: string): boolean {
@@ -226,6 +244,8 @@ function packGroup(items: PackingItem[], boxes: Box[]): Plan[] {
   return result;
 }
 export function calculatePackages(items: PackingItem[], boxes: PackagingBox[], sizes: YamatoSize[], rates: YamatoRate[], settings: PackingSettings): { packages: CalculatedPackage[]; shipping_fee: number; discount_amount: number } {
+  const features = getShippingFeatures(settings);
+  if (!features.packing_enabled || settings.delivery_method === 'own_delivery' || items.length === 0) return { packages: [], shipping_fee: 0, discount_amount: 0 };
   const ids = new Set<string>();
   for (const item of items) {
     integer(item.quantity, '数量', 1); integer(item.volume_ml, '容量', 1);
@@ -233,11 +253,10 @@ export function calculatePackages(items: PackingItem[], boxes: PackagingBox[], s
     ids.add(item.product_id);
     if (!Number.isFinite(item.weight_kg) || item.weight_kg <= 0) throw new DomainError('INVALID_WEIGHT', '商品重量は0より大きい値を指定してください。');
   }
-  if (settings.delivery_method === 'own_delivery' || items.length === 0) return { packages: [], shipping_fee: 0, discount_amount: 0 };
   const date = settings.date ?? jstDate(new Date());
   assertDate(date);
-  const validSizes = sizes.filter((s) => activeAt(s, date));
-  if (!validSizes.length) throw new DomainError('SIZE_UNAVAILABLE', '有効なヤマトサイズが設定されていません。');
+  const validSizes = features.yamato_sizes_enabled ? sizes.filter((s) => activeAt(s, date)) : [];
+  if (features.yamato_sizes_enabled && !validSizes.length) throw new DomainError('SIZE_UNAVAILABLE', '有効なヤマトサイズが設定されていません。');
   const validBoxes: Box[] = boxes.filter((b) => activeAt(b, date)).map((box) => {
     let volumes: number[];
     try { volumes = JSON.parse(box.supported_volumes_json) as number[]; } catch { throw new DomainError('INVALID_BOX', '梱包箱の対応容量が不正です。'); }
@@ -246,7 +265,7 @@ export function calculatePackages(items: PackingItem[], boxes: PackagingBox[], s
     if (![box.length_cm, box.width_cm, box.height_cm].every((n) => Number.isFinite(n) && n > 0) || !Number.isFinite(box.box_weight_kg) || box.box_weight_kg < 0) throw new DomainError('INVALID_BOX', '梱包箱の寸法または重量が不正です。');
     const sides = box.length_cm + box.width_cm + box.height_cm;
     const fitting = validSizes.filter((s) => sides <= s.max_three_sides_cm);
-    return { ...box, volumes, sides, maxWeight: Math.max(0, ...fitting.map((s) => s.max_weight_kg)) };
+    return { ...box, volumes, sides, maxWeight: features.yamato_sizes_enabled ? Math.max(0, ...fitting.map((s) => s.max_weight_kg)) : Infinity };
   }).filter((box) => box.maxWeight > box.box_weight_kg).sort((a, b) => a.priority - b.priority || a.id.localeCompare(b.id));
   const packages: CalculatedPackage[] = [];
   // A one-sho bottle is never mixed with the smaller glass bottles, even if a
@@ -258,16 +277,16 @@ export function calculatePackages(items: PackingItem[], boxes: PackagingBox[], s
     for (const plan of packGroup(group, compatible)) {
       const contents = group.flatMap((i, n) => plan.counts[n]! > 0 ? [{ product_id: i.product_id, quantity: plan.counts[n]!, ...(i.line_no !== undefined ? { line_no: i.line_no } : {}) }] : []);
       const weight = Math.round((plan.box.box_weight_kg + group.reduce((n, i, j) => n + i.weight_kg * plan.counts[j]!, 0)) * 1e9) / 1e9;
-      const size = determineYamatoSize(plan.box.sides, weight, validSizes);
-      const matching = rates.filter((r) => activeAt(r, date) && (r.origin_region ?? '中部') === (settings.origin_region ?? '中部') && r.dest_region === settings.dest_region && r.size_code === size.size_code).sort((a, b) => (a.rate_type === 'contract' ? 0 : 1) - (b.rate_type === 'contract' ? 0 : 1) || (b.valid_from ?? '').localeCompare(a.valid_from ?? '') || (a.id ?? '').localeCompare(b.id ?? ''));
+      const size = features.yamato_sizes_enabled ? determineYamatoSize(plan.box.sides, weight, validSizes) : null;
+      const matching = features.yamato_rates_enabled ? rates.filter((r) => activeAt(r, date) && (r.origin_region ?? '中部') === (settings.origin_region ?? '中部') && r.dest_region === settings.dest_region && r.size_code === size!.size_code).sort((a, b) => (a.rate_type === 'contract' ? 0 : 1) - (b.rate_type === 'contract' ? 0 : 1) || (b.valid_from ?? '').localeCompare(a.valid_from ?? '') || (a.id ?? '').localeCompare(b.id ?? '')) : [];
       const rate = matching[0];
-      if (!rate) throw new DomainError('RATE_UNAVAILABLE', `${settings.dest_region}・${size.size_code}サイズの有効な運賃が未設定です。`);
-      integer(rate.shipping_fee, '運賃');
-      packages.push({ package_no: packages.length + 1, packaging_box_id: plan.box.id, box_name: plan.box.name ?? plan.box.id, size_code: size.size_code, three_sides_cm: plan.box.sides, total_weight_kg: weight, shipping_fee: rate.shipping_fee, rate_type: rate.rate_type, items: contents });
+      if (features.yamato_rates_enabled && !rate) throw new DomainError('RATE_UNAVAILABLE', `${settings.dest_region}・${size!.size_code}サイズの有効な運賃が未設定です。`);
+      if (rate) integer(rate.shipping_fee, '運賃');
+      packages.push({ package_no: packages.length + 1, packaging_box_id: plan.box.id, box_name: plan.box.name ?? plan.box.id, size_code: size?.size_code ?? null, three_sides_cm: plan.box.sides, total_weight_kg: weight, shipping_fee: rate?.shipping_fee ?? null, rate_type: rate?.rate_type ?? null, items: contents });
     }
   }
-  const gross = integer(packages.reduce((n, p) => n + p.shipping_fee, 0), '送料合計');
+  const gross = integer(packages.reduce((n, p) => n + (p.shipping_fee ?? 0), 0), '送料合計');
   const discount = integer(numeric(settings.multi_parcel_discount_amount, 0, '複数個口割引額'), '複数個口割引額');
-  const discount_amount = packages.length > 1 && enabled(settings.multi_parcel_discount_enabled) ? Math.min(gross, discount) : 0;
+  const discount_amount = features.yamato_rates_enabled && packages.length > 1 && enabled(settings.multi_parcel_discount_enabled) ? Math.min(gross, discount) : 0;
   return { packages, shipping_fee: gross - discount_amount, discount_amount };
 }

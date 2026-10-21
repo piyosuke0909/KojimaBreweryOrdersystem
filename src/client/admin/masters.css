@@ -64,3 +64,30 @@
 .master-image-preview{display:grid;grid-template-columns:minmax(0,1fr);justify-items:start;gap:9px;max-width:100%;margin-top:10px}
 .master-image-preview>img{display:block;width:240px;max-width:100%;height:170px;object-fit:contain;border:1px solid #dce3eb;border-radius:6px;background:#f8fafc}
 .master-image-preview-error{margin:0;color:#a43842;font-size:12px;line-height:1.8;overflow-wrap:anywhere}
+
+/* Shipping menus wrap; all master columns remain readable without horizontal scrolling. */
+.master-tabs{flex-wrap:wrap;overflow:visible}
+.master-page-shipping .master-shipping-table-wrap{overflow:visible}
+.master-page-shipping .master-shipping-table{width:100%;min-width:0;table-layout:fixed}
+.master-page-shipping .master-shipping-table th,.master-page-shipping .master-shipping-table td{white-space:normal;overflow-wrap:anywhere}
+.master-page-shipping .master-shipping-table th:last-child{width:90px}
+.master-day-status{display:inline-block;font-size:12px;font-weight:500;margin-left:8px;color:#6b7d8e}
+.master-calendar-actions{gap:10px}
+.master-calendar-order{margin-right:auto}
+.master-feature-note{margin:22px 0 0;font-size:13px;line-height:1.8;padding:14px;border:1px solid #dce5ee;border-radius:6px}
+.master-checkbox:has(input:disabled){color:#8893a0}
+.master-page-shipping .master-calendar-day.closed.selected{background:#fcf3f1}
+@media(max-width:1050px){
+ .master-page-shipping .master-shipping-table,.master-page-shipping .master-shipping-table tbody{display:block;width:100%}
+ .master-page-shipping .master-shipping-table thead{display:none}
+ .master-page-shipping .master-shipping-table tr{display:block;border-bottom:2px solid #d1dce7;padding:8px 0;background:#fff}
+ .master-page-shipping .master-shipping-table td[data-label]{display:grid;grid-template-columns:minmax(90px,.4fr) minmax(0,1fr);align-items:center;gap:12px;padding:10px 18px;border:0;border-bottom:1px solid #e5ebf1;min-height:44px}
+ .master-page-shipping .master-shipping-table td[data-label]:before{content:attr(data-label);font-size:12px;font-weight:600;color:#627387}
+ .master-page-shipping .master-shipping-table td[data-label]:last-child{border-bottom:0}
+ .master-page-shipping .master-shipping-table td[data-label]>.admin-btn{justify-self:start}
+ .master-page-shipping .master-shipping-table td[colspan]{display:block;width:100%;box-sizing:border-box}
+}
+@media(max-width:600px){
+ .master-calendar-actions>.admin-btn{width:100%;justify-content:center;margin:0}
+ .master-tabs .admin-tab{justify-content:center;padding:10px 12px}
+}

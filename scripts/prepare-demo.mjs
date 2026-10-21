@@ -219,13 +219,9 @@ export async function prepareDemo(api, opts, dependencies = {}) {
     if (existingReal) { bump('reused_existing', 'rates'); continue; }
     await upsert('rates', current, { origin_region: '中部', dest_region: '東京都', size_code: size, shipping_fee, rate_type: 'standard', valid_from: current?.valid_from ?? today, status: 'active', note: note('仮運賃です。ヤマト運輸の正式な料金ではありません。') });
   }
-  const calendarMap = new Map(calendar.map((row) => [row.date, row]));
-  for (let day = -14; day <= 89; day++) {
-    const date = addDays(today, day);
-    if (calendarMap.has(date)) { summary.preserved_calendar_days++; continue; }
-    const weekend = [0, 6].includes(new Date(date + 'T00:00:00Z').getUTCDay());
-    await upsert('calendar', null, { date, is_deliverable: weekend ? 0 : 1, reason: weekend ? '定休日' : null, note: note('仮の営業日です。土日休業・祝日未反映。正式な休業日は別途登録してください。') }, '/api/admin/calendar', 'date');
-  }
+  // Unconfigured dates are open. Only the administrator's actual holidays belong
+  // in this calendar; demo preparation must not introduce weekend closures.
+  summary.preserved_calendar_days = calendar.length;
   const issuerDefaults = {
     display_name: '[デモ] 小島醸造（動作確認用）', postal_code: '000-0000', address: '[デモ・架空] 愛知県犬山市テスト町0-0', tel: '000-0000-0000', email: 'demo@example.invalid', contact_person: '[デモ] 動作確認担当',
     bank_name: '[デモ・架空] サンプル銀行', bank_branch_name: '[デモ・架空] テスト支店', bank_account_type: '普通', bank_account_number: '0000000', bank_account_holder: 'デモ）コジマジョウゾウ',

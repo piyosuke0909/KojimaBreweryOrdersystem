@@ -85,14 +85,8 @@ INSERT OR IGNORE INTO company_product_prices (id, company_id, product_id, unit_p
   ('price-e-nindou-1800', 'company-e', 'nindou-1800', 8800, 1, '2020-01-01', '業者限定商品の取扱許可（デモ）'),
   ('price-e-umeshu-1800', 'company-e', 'umeshu-1800', 9800, 1, '2020-01-01', '業者限定商品の取扱許可（デモ）');
 
--- A concrete delivery calendar is required. Dates missing from the calendar cannot be ordered.
-WITH RECURSIVE days(date) AS (
-  SELECT date('now', '+9 hours', '-60 days')
-  UNION ALL SELECT date(date, '+1 day') FROM days WHERE date < date('now', '+9 hours', '+400 days')
-)
-INSERT OR IGNORE INTO delivery_calendar (date, is_deliverable, reason, note)
-SELECT date, CASE WHEN strftime('%w', date) IN ('0','6') THEN 0 ELSE 1 END,
-CASE WHEN strftime('%w', date) IN ('0','6') THEN '定休日' ELSE NULL END, 'デモ: 土日休業。祝祭日・正式休業日は本番運用前に設定してください。' FROM days;
+-- Every date is open by default. Register explicit closures in the admin calendar.
+-- Re-running demo seeds never adds holidays or changes an existing calendar.
 
 INSERT OR IGNORE INTO packaging_boxes (id, name, supported_volumes_json, max_bottles, length_cm, width_cm, height_cm, box_weight_kg, allow_mixed, priority, valid_from, note) VALUES
   ('small-1', '小瓶1本箱（仮）', '[80,300,500,700]', 1, 12, 12, 32, 0.2, 1, 30, '2020-01-01', '仮の寸法・重量。要実測'),

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { addBusinessDays, calculatePackages, cancellationDeadline, canEditOrder, computePricing, determineYamatoSize, getDeliveryDates, isBusinessDay, jstDate, type CalendarDay, type PackagingBox, type PackingItem, type YamatoRate, type YamatoSize } from '../src/domain';
+import { addBusinessDays, calculatePackages, cancellationDeadline, canEditOrder, computePricing, determineYamatoSize, getDeliveryDates, getShippingFeatures, isBusinessDay, jstDate, type CalendarDay, type PackagingBox, type PackingItem, type YamatoRate, type YamatoSize } from '../src/domain';
 
 const sizes: YamatoSize[] = [
   { size_code: '60', max_three_sides_cm: 60, max_weight_kg: 2 },
@@ -48,7 +48,7 @@ describe('integer-yen pricing and invoice reference tax', () => {
   });
 });
 
-describe('explicit delivery calendar and JST deadlines', () => {
+describe('holiday exceptions and JST deadlines', () => {
   it('uses JST at a UTC date boundary', () => {
     expect(jstDate('2026-10-18T15:00:00Z')).toBe('2026-10-19');
     expect(jstDate('2026-10-18T14:59:59Z')).toBe('2026-10-18');
@@ -58,13 +58,31 @@ describe('explicit delivery calendar and JST deadlines', () => {
     expect(addBusinessDays('2026-10-02', -3, calendar)).toBe('2026-09-29');
     expect(addBusinessDays('2026-10-19', 0, calendar)).toBe('2026-10-19');
     expect(isBusinessDay('2026-10-17', calendar)).toBe(false);
-    expect(isBusinessDay('2026-12-01', calendar)).toBe(false);
+    expect(isBusinessDay('2026-12-01', calendar)).toBe(true);
   });
-  it('honors event closures and refuses to guess beyond the calendar', () => {
+  it('honors event closures and keeps unconfigured future dates open', () => {
     const closed = calendar.map((row) => row.date === '2026-10-20' ? { ...row, is_deliverable: 0 } : row);
     expect(addBusinessDays('2026-10-19', 4, closed)).toBe('2026-10-26');
-    expect(() => addBusinessDays('2026-11-30', 1, calendar)).toThrow('配送カレンダー');
+    expect(addBusinessDays('2026-11-30', 1, calendar)).toBe('2026-12-01');
     expect(() => isBusinessDay('2026-02-30', calendar)).toThrow();
+  });
+  it('opens weekends by default and offers a bounded booking window with an empty calendar', () => {
+    expect(isBusinessDay('2026-10-17', [])).toBe(true);
+    expect(addBusinessDays('2026-10-16', 1, [])).toBe('2026-10-17');
+    const dates = getDeliveryDates('2026-10-16T01:00:00Z', {}, [], { min_lead_business_days: 1 });
+    expect(dates).toHaveLength(90);
+    expect(dates[0]).toBe('2026-10-17');
+    expect(dates.at(-1)).toBe('2027-01-14');
+  });
+  it('skips only explicit holidays for both booking lead time and cancellation cutoff', () => {
+    const holidays = [{ date: '2026-10-17', is_deliverable: 0 }];
+    expect(getDeliveryDates('2026-10-16T01:00:00Z', {}, holidays, { min_lead_business_days: 1 })[0]).toBe('2026-10-18');
+    expect(cancellationDeadline('2026-10-20', holidays)).toBe('2026-10-16T17:00:00+09:00');
+    const order = { status: 'received', is_invoice_locked: 0, desired_delivery_date: '2026-10-20' };
+    expect(canEditOrder(order, '2026-10-16T08:00:00Z', holidays)).toBe(true);
+    expect(canEditOrder(order, '2026-10-16T08:00:00.001Z', holidays)).toBe(false);
+    expect(addBusinessDays('2026-10-16', 2, [...holidays, { date: '2026-10-19', is_deliverable: 0 }])).toBe('2026-10-20');
+    expect(() => addBusinessDays('2026-10-16', Number.MAX_SAFE_INTEGER, [])).toThrow();
   });
   it('intersects lead time, the shipping rule and deliverable dates', () => {
     const rule = { allowed_periods_json: '[{"start_day":1,"end_day":7},{"start_day":15,"end_day":22}]' };
@@ -87,6 +105,18 @@ describe('explicit delivery calendar and JST deadlines', () => {
 });
 
 describe('packaging, parcel size and shipping fares', () => {
+  it('turns off dependent calculations without requiring disabled masters', () => {
+    expect(getShippingFeatures()).toEqual({ packing_enabled: true, yamato_sizes_enabled: true, yamato_rates_enabled: true });
+    expect(getShippingFeatures({ packing_enabled: 'false' })).toEqual({ packing_enabled: false, yamato_sizes_enabled: false, yamato_rates_enabled: false });
+    const products = [item('a', 300, 8)];
+    expect(calculatePackages(products, [], [], [], { ...settings, packing_enabled: false })).toEqual({ packages: [], shipping_fee: 0, discount_amount: 0 });
+    const withoutSize = calculatePackages(products, [box('six', 6)], [], [], { ...settings, yamato_sizes_enabled: false });
+    expect(withoutSize.packages).toHaveLength(2);
+    expect(withoutSize.packages.every(p => p.size_code === null && p.shipping_fee === null && p.rate_type === null)).toBe(true);
+    const withoutRates = calculatePackages(products, [box('six', 6)], sizes, [], { ...settings, yamato_rates_enabled: false, multi_parcel_discount_enabled: true, multi_parcel_discount_amount: 100 });
+    expect(withoutRates.packages.every(p => p.size_code !== null && p.shipping_fee === null && p.rate_type === null)).toBe(true);
+    expect(withoutRates.discount_amount).toBe(0);
+  });
   it('chooses six plus two for eight one-sho bottles and keeps groups separate', () => {
     const boxes = [box('large-6', 6, [1800]), box('large-2', 2, [1800]), box('large-1', 1, [1800]), box('small-6', 6)];
     const result = calculatePackages([item('large', 1800, 8, 2.7), item('small', 700, 1)], boxes, sizes, rates, settings);
@@ -138,7 +168,7 @@ describe('packaging, parcel size and shipping fares', () => {
     const discounted = { ...settings, multi_parcel_discount_enabled: 'true', multi_parcel_discount_amount: '10000' };
     const result = calculatePackages([item('a', 300, 8)], [box('six', 6)], sizes, rates, discounted);
     expect(result.shipping_fee).toBe(0);
-    expect(result.discount_amount).toBe(result.packages.reduce((n, p) => n + p.shipping_fee, 0));
+    expect(result.discount_amount).toBe(result.packages.reduce((n, p) => n + (p.shipping_fee ?? 0), 0));
     expect(calculatePackages([item('a', 300, 1)], [box('six', 6)], sizes, rates, discounted).discount_amount).toBe(0);
     expect(calculatePackages([item('a', 300, 8)], [box('six', 6)], sizes, rates, { ...discounted, multi_parcel_discount_enabled: 'false' }).shipping_fee).toBeGreaterThan(0);
   });

@@ -186,3 +186,130 @@ for (const width of [390, 768, 1024]) {
     await page.screenshot({ path: `.local/screenshots/admin-ux-product-${width}.png`, fullPage: true });
   });
 }
+
+async function selectAdminCalendarDate(page: Page, date: string) {
+  await expect(page.locator('.master-calendar')).toBeVisible();
+  const day = page.locator(`.master-calendar-day[aria-label^="${date} "]`);
+  for (let offset = 0; offset < 4 && await day.count() === 0; offset++) {
+    const next = page.waitForResponse(response => response.url().includes('/api/admin/calendar?') && response.request().method() === 'GET');
+    await page.getByRole('button', { name: '翌月', exact: true }).click();
+    expect((await next).ok()).toBe(true);
+    await expect(page.locator('.master-calendar')).toBeVisible();
+  }
+  await day.click();
+}
+
+test('休業日だけを登録・解除でき、カレンダーの日付を注文フォームへ引き継いで見積できる', async ({ page }) => {
+  const dates = (await (await page.request.get('/api/admin/companies/company-a/delivery-dates?shipping_address_id=address-a')).json()).data;
+  const deliveryDate: string = dates[0];
+  expect(deliveryDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  const calendarUrl = `/api/admin/calendar?from=${deliveryDate}&to=${deliveryDate}`;
+  const original = (await (await page.request.get(calendarUrl)).json()).data.find((entry: any) => entry.date === deliveryDate);
+  try {
+    await page.goto('/admin/shipping');
+    await expect(page.getByText('通常は休みなしです。休む日だけ選んで登録してください。', { exact: true })).toBeVisible();
+    await selectAdminCalendarDate(page, deliveryDate);
+    const editor = page.locator('.master-day-editor');
+    await editor.getByPlaceholder('例：設備点検のため休業', { exact: true }).fill('UI回帰テストの休業日');
+    await editor.getByRole('button', { name: '休業日にする', exact: true }).click();
+    await expect(page.locator(`.master-calendar-day[aria-label="${deliveryDate} 休業日"]`)).toBeVisible();
+    await expect(editor.getByRole('button', { name: 'この日で注文を登録', exact: true })).toHaveCount(0);
+    const closedDates = (await (await page.request.get('/api/admin/companies/company-a/delivery-dates?shipping_address_id=address-a')).json()).data;
+    expect(closedDates).not.toContain(deliveryDate);
+    await editor.getByRole('button', { name: '休業日を解除', exact: true }).click();
+    await expect(page.locator(`.master-calendar-day[aria-label="${deliveryDate} 通常営業"]`)).toBeVisible();
+    await editor.getByRole('button', { name: 'この日で注文を登録', exact: true }).click();
+    const form = page.getByRole('dialog', { name: '注文を登録', exact: true });
+    await expect(form).toBeVisible();
+    await form.getByRole('combobox', { name: '注文する取引先', exact: true }).selectOption('company-a');
+    await expect(form.locator('input[type="date"]')).toHaveValue(deliveryDate);
+    await form.getByRole('spinbutton', { name: '犬山忍冬酒：侍の酒 300mlの注文数量', exact: true }).fill('1');
+    await form.getByRole('button', { name: '送料・合計を確認', exact: true }).click();
+    await expect(form.getByRole('heading', { name: '登録内容の確認', exact: true })).toBeVisible();
+    await form.getByRole('button', { name: '戻る', exact: true }).click();
+    await expect(page).toHaveURL(/\/admin\/orders$/);
+  } finally {
+    await page.request.delete(`/api/admin/calendar/${deliveryDate}`);
+    if (original) expect((await page.request.post('/api/admin/calendar', { data: { date: original.date, is_deliverable: original.is_deliverable, reason: original.reason, note: original.note } })).ok()).toBe(true);
+  }
+});
+
+test('梱包をオフにすると関連タブと自動計算が停止し、固定送料と注文ごとの送料を使える', async ({ page }) => {
+  const original = (await (await page.request.get('/api/admin/settings')).json()).data;
+  page.on('dialog', dialog => dialog.accept());
+  try {
+    expect((await page.request.put('/api/admin/settings', { data: { packing_enabled: 'false', yamato_sizes_enabled: 'true', yamato_rates_enabled: 'true', manual_shipping_fee: '' } })).ok()).toBe(true);
+    await page.goto('/admin/settings');
+    await page.getByRole('tab', { name: '配送・梱包機能', exact: true }).click();
+    await expect(page.locator('#master-packing_enabled')).not.toBeChecked();
+    await expect(page.locator('#master-yamato_sizes_enabled')).toBeDisabled();
+    await expect(page.locator('#master-yamato_rates_enabled')).toBeDisabled();
+    await page.locator('#master-manual_shipping_fee').fill('770');
+    const saved = page.waitForResponse(response => response.url().endsWith('/api/admin/settings') && response.request().method() === 'PUT');
+    await page.getByRole('button', { name: '設定を保存', exact: true }).click();
+    expect((await saved).ok()).toBe(true);
+    await expect(page.getByRole('status')).toContainText('設定を保存しました');
+    await page.getByRole('tab', { name: '税・注文・通知', exact: true }).click();
+    await expect(page.locator('#master-tax_rate')).toBeVisible();
+    const taxSaved = page.waitForResponse(response => response.url().endsWith('/api/admin/settings') && response.request().method() === 'PUT');
+    await page.getByRole('button', { name: '設定を保存', exact: true }).click();
+    expect((await taxSaved).ok()).toBe(true);
+    await expect(page.getByRole('status')).toContainText('設定を保存しました');
+    const afterTaxSave = (await (await page.request.get('/api/admin/settings')).json()).data;
+    expect(afterTaxSave.manual_shipping_fee).toBe('770');
+    await expect(page.locator('#master-multi_parcel_discount_enabled')).toHaveCount(0);
+    await expect(page.locator('#master-multi_parcel_discount_amount')).toHaveCount(0);
+    await page.goto('/admin/shipping');
+    for (const name of ['梱包箱', 'ヤマトサイズ', 'ヤマト運賃']) await expect(page.getByRole('tab', { name, exact: true })).toHaveCount(0);
+    const dates = (await (await page.request.get('/api/admin/companies/company-b/delivery-dates?shipping_address_id=address-b')).json()).data;
+    expect(dates.length).toBeGreaterThan(0);
+    await page.goto(`/admin/orders?create=1&desired_delivery_date=${dates[0]}`);
+    const form = page.getByRole('dialog', { name: '注文を登録', exact: true });
+    await form.getByRole('combobox', { name: '注文する取引先', exact: true }).selectOption('company-b');
+    await form.getByRole('spinbutton', { name: '犬山忍冬酒：侍の酒 300mlの注文数量', exact: true }).fill('1');
+    const fixedQuote = page.waitForResponse(response => response.url().endsWith('/api/admin/orders/quote'));
+    await form.getByRole('button', { name: '送料・合計を確認', exact: true }).click();
+    const fixed = (await (await fixedQuote).json()).data;
+    expect(fixed.shipping_fee).toBe(770);
+    expect(fixed.shipping_fee_source).toBe('fixed');
+    expect(fixed.packages).toEqual([]);
+    await expect(form.locator('.admin-create-quote')).not.toContainText('0個口');
+    await form.getByRole('spinbutton', { name: 'この注文の送料（税抜・円）', exact: true }).fill('880');
+    const manualQuote = page.waitForResponse(response => response.url().endsWith('/api/admin/orders/quote'));
+    await form.getByRole('button', { name: '送料・合計を確認', exact: true }).click();
+    const manual = (await (await manualQuote).json()).data;
+    expect(manual.shipping_fee).toBe(880);
+    expect(manual.shipping_fee_source).toBe('manual');
+    await page.goto('/admin/settings');
+    await page.getByRole('tab', { name: '配送・梱包機能', exact: true }).click();
+    await page.locator('#master-packing_enabled').check();
+    await expect(page.locator('#master-yamato_sizes_enabled')).toBeEnabled();
+    await expect(page.locator('#master-yamato_rates_enabled')).toBeEnabled();
+    await page.getByRole('button', { name: '設定を保存', exact: true }).click();
+    await expect(page.getByRole('status')).toContainText('設定を保存しました');
+    await page.locator('#master-packing_enabled').uncheck();
+    await expect(page.locator('#master-manual_shipping_fee')).toHaveValue('770');
+    await page.locator('#master-packing_enabled').check();
+    await page.goto('/admin/shipping');
+    for (const name of ['梱包箱', 'ヤマトサイズ', 'ヤマト運賃']) await expect(page.getByRole('tab', { name, exact: true })).toBeVisible();
+  } finally {
+    expect((await page.request.put('/api/admin/settings', { data: original })).ok()).toBe(true);
+  }
+});
+
+for (const width of [390, 768, 1366]) {
+  test(`${width}pxで配送メニューと各表に横スクロールが発生しない`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto('/admin/shipping');
+    await expect(page.getByRole('tab', { name: 'ヤマト運賃', exact: true })).toBeVisible();
+    for (const name of ['配送カレンダー', '梱包箱', 'ヤマトサイズ', 'ヤマト運賃', '配送ルール']) {
+      await page.getByRole('tab', { name, exact: true }).click();
+      if (name === '配送カレンダー') await expect(page.locator('.master-calendar')).toBeVisible();
+      else await expect(page.locator('.master-shipping-table tbody tr').first()).toBeVisible();
+      await expectNoPageOverflow(page);
+      const overflowing = await page.locator('.master-page-shipping .master-tabs, .master-page-shipping .admin-table-wrap').evaluateAll(elements => elements.filter(element => element.scrollWidth > element.clientWidth + 1).map(element => element.className));
+      expect(overflowing).toEqual([]);
+    }
+    await page.screenshot({ path: `.local/screenshots/admin-ux-shipping-${width}.png`, fullPage: true });
+  });
+}

@@ -107,7 +107,7 @@
 .admin-table{--admin-row-divider:#9bacc2;--admin-cell-divider:#c3cfde;border-color:var(--admin-row-divider)}
 .admin-table th{border-color:var(--admin-cell-divider);border-bottom:2px solid var(--admin-row-divider)}
 .admin-table td{border-color:var(--admin-cell-divider);border-bottom:2px solid var(--admin-row-divider)}
-.admin-table tbody tr:nth-child(even){background:#f2f5f9}
+.admin-table tbody tr,.admin-table tbody tr:nth-child(even){background:#fff}
 .admin-table tbody tr:hover,.admin-table tbody .admin-clickable-row:hover{background:#eaf2fc}
 .admin-root .admin-btn,.admin-root .admin-table-detail,.admin-root .admin-text-danger,.admin-root .admin-text-link{min-height:44px;padding:9px 13px}
 .admin-root .admin-btn.secondary,.admin-root .admin-table-detail,.admin-root .admin-text-link{border-color:#9bafc7}

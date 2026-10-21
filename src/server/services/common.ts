@@ -42,7 +42,8 @@ export async function atomic(db: D1Database, statements: D1PreparedStatement[]) 
     throw error;
   }
 }
-export const settings = async (db: D1Database) => Object.fromEntries((await rows(db,'SELECT key,value FROM settings')).map(r=>[r.key,r.value]));
+const shippingSettingDefaults = { packing_enabled: 'true', yamato_sizes_enabled: 'true', yamato_rates_enabled: 'true', manual_shipping_fee: '' };
+export const settings = async (db: D1Database) => ({...shippingSettingDefaults,...Object.fromEntries((await rows(db,'SELECT key,value FROM settings')).map(r=>[r.key,r.value]))});
 export const pagination = (c: Context<AppEnv>,defaultSize=50) => ({page:Math.max(1, Math.min(100000,Math.floor(Number(c.req.query('page'))) || 1)), page_size:Math.max(1,Math.min(1000,Math.floor(Number(c.req.query('page_size'))) || defaultSize))});
 export async function paginated(c: Context<AppEnv>, table: string, where = '1=1', args: any[] = [], order = 'id DESC', select = '*', defaultSize=50) {
   const {page,page_size} = pagination(c,defaultSize);

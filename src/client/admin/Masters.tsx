@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Wine, Boxes, CalendarDays, Check, ChevronLeft, ChevronRight, CircleAlert, Landmark, Loader2, Plus, RefreshCw, Search, Settings2, ShieldCheck, Trash2, Truck, X } from 'lucide-react';
 import { api } from './api';
 import { FieldHelp, navigableRowProps } from './ui';
@@ -7,7 +8,7 @@ import RichMenu from './RichMenu';
 import './masters.css';
 
 type Row = Record<string, any>;
-type Field = { key: string; label: string; type?: string; required?: boolean; options?: [string, string][]; hint?: string; help?: string; placeholder?: string; min?: number; max?: number; step?: string; wide?: boolean; pattern?: string };
+type Field = { key: string; label: string; type?: string; required?: boolean; disabled?: boolean; options?: [string, string][]; hint?: string; help?: string; placeholder?: string; min?: number; max?: number; step?: string; wide?: boolean; pattern?: string };
 type ResourceConfig = { path: string; title: string; singular: string; description: string; key?: string; fields: Field[]; defaults: Row; columns: { key: string; label: string; render?: (row: Row) => ReactNode }[] };
 const yen = (value: unknown) => value === null || value === undefined || value === '' ? '未設定' : `¥${Number(value).toLocaleString('ja-JP')}`;
 const dateKey = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
@@ -17,6 +18,13 @@ const productStatus: Record<string, string> = { on_sale: '販売中', suspended:
 const errorText = (e: unknown) => e instanceof Error ? e.message : '処理に失敗しました。もう一度お試しください。';
 const list = (data: any): Row[] => Array.isArray(data) ? data : data?.items || [];
 const readable = (value: unknown) => typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value ?? '—');
+const flagEnabled = (value: unknown) => value === undefined || value === null || value === true || value === 1 || value === 'true';
+const shippingDefaults = { packing_enabled: 'true', yamato_sizes_enabled: 'true', yamato_rates_enabled: 'true', manual_shipping_fee: '' };
+function shippingFeatures(settings: Row) {
+  const packing = flagEnabled(settings.packing_enabled);
+  const sizes = packing && flagEnabled(settings.yamato_sizes_enabled);
+  return { packing, sizes, rates: sizes && flagEnabled(settings.yamato_rates_enabled) };
+}
 // Examples stay in placeholders: they must never become saved company or bank data.
 const fieldGuidance: Record<string, { example?: string; help: string }> = {
   name: { example: '小島のしずく 700ml', help: '一覧や選択画面で区別できる名称を入力します。' },
@@ -222,7 +230,7 @@ function ProductImagePreview({ value }: { value: string }) {
 function Fields({ fields, value, setValue, lockedKey }: { fields: Field[]; value: Row; setValue: (v: Row) => void; lockedKey?: string }) {
   return <div className="admin-form-grid">{fields.map(field => {
     const id = `master-${field.key}`;
-    const common = { id, name: field.key, required: field.required, disabled: lockedKey === field.key, className: field.options ? 'admin-select' : 'admin-input' };
+    const common = { id, name: field.key, required: field.required, disabled: field.disabled || lockedKey === field.key, className: field.options ? 'admin-select' : 'admin-input' };
     const guidance = fieldGuidance[field.key];
     const help = field.help || guidance?.help || `${field.label}を入力します。`;
     const placeholder = field.placeholder || guidance?.example;
@@ -239,7 +247,7 @@ function Fields({ fields, value, setValue, lockedKey }: { fields: Field[]; value
       try { const periods = typeof val === 'string' ? JSON.parse(val) : val; if (Array.isArray(periods)) displayed = periods.map(p => `${p.start_day}-${p.end_day}`).join(', '); } catch { /* Keep the user's in-progress entry. */ }
     }
     return <div className={`admin-field ${field.wide || field.type === 'textarea' || field.type === 'json' ? 'master-field-wide' : ''}`} key={field.key}>
-      {field.type === 'checkbox' ? <label className="master-checkbox"><input id={id} type="checkbox" checked={val === true || val === 1 || val === 'true'} onChange={e => setValue({ ...value, [field.key]: e.target.checked ? 1 : 0 })} />{caption}</label> : <><label htmlFor={id}>{caption}</label>
+      {field.type === 'checkbox' ? <label className="master-checkbox"><input id={id} type="checkbox" disabled={field.disabled} checked={val === true || val === 1 || val === 'true'} onChange={e => setValue({ ...value, [field.key]: e.target.checked ? 1 : 0 })} />{caption}</label> : <><label htmlFor={id}>{caption}</label>
         {field.options ? <select {...common} value={String(val)} onChange={e => setValue({ ...value, [field.key]: e.target.value })}>{!field.required && <option value="">選択してください</option>}{field.options.map(([v, label]) => <option key={v} value={v}>{label}</option>)}</select>
           : field.type === 'textarea' || field.type === 'json' ? <textarea {...common} placeholder={placeholder ? `例：${placeholder}` : undefined} rows={field.type === 'json' ? 3 : 4} value={typeof val === 'object' ? JSON.stringify(val, null, 2) : val} onChange={e => setValue({ ...value, [field.key]: e.target.value })} />
             : <input {...common} placeholder={placeholder ? `例：${placeholder}` : undefined} type={['volumes', 'cities', 'periods'].includes(field.type || '') ? 'text' : field.type || 'text'} min={field.min} max={field.max} step={field.step || (field.type === 'number' ? '1' : undefined)} pattern={field.pattern} value={displayed} onChange={e => setValue({ ...value, [field.key]: field.type === 'number' && e.target.value !== '' ? Number(e.target.value) : e.target.value })} />}</>}
@@ -338,7 +346,7 @@ const shippingConfigs: Record<string, ResourceConfig> = {
   'shipping-rules': {
     path: 'shipping-rules', title: '配送ルール', singular: '配送ルール', description: '対象地域、自社配達・ヤマト宅急便、配送可能期間を管理します。', defaults: { delivery_method: 'yamato', is_free_shipping: 0, status: 'active', target_condition_json: '{}', allowed_periods_json: '[]' },
     fields: [{ key: 'name', label: 'ルール名', required: true, placeholder: '犬山市内 自社配達' }, { key: 'delivery_method', label: '配送方法', required: true, options: [['own_delivery', '自社配達'], ['yamato', 'ヤマト宅急便']] }, { key: 'target_condition_json', label: '対象の市区町村', type: 'cities', hint: '例：犬山市, 江南市。空欄の場合はすべての地域が対象です。' }, { key: 'allowed_periods_json', label: '毎月の配送可能期間', type: 'periods', hint: '例：1-7, 15-22（毎月1〜7日と15〜22日）。空欄の場合は日付を制限しません。' }, { key: 'is_free_shipping', label: '送料無料とする', type: 'checkbox' }, { key: 'status', label: '状態', required: true, options: activeOptions }, { key: 'note', label: '管理用メモ', type: 'textarea' }],
-    columns: [{ key: 'name', label: 'ルール名', render: r => <strong>{r.name}</strong> }, { key: 'delivery_method', label: '配送方法', render: r => r.delivery_method === 'own_delivery' ? '自社配達' : 'ヤマト宅急便' }, { key: 'is_free_shipping', label: '送料', render: r => r.is_free_shipping ? '無料' : '運賃マスターに従う' }, { key: 'status', label: '状態', render: r => <Badge value={r.status} /> }],
+    columns: [{ key: 'name', label: 'ルール名', render: r => <strong>{r.name}</strong> }, { key: 'delivery_method', label: '配送方法', render: r => r.delivery_method === 'own_delivery' ? '自社配達' : 'ヤマト宅急便' }, { key: 'is_free_shipping', label: '送料', render: r => r.is_free_shipping ? '無料' : '配送設定に従う' }, { key: 'status', label: '状態', render: r => <Badge value={r.status} /> }],
   },
 };
 
@@ -391,8 +399,8 @@ function Resource({ config }: { config: ResourceConfig }) {
     <section className="admin-card">
       <div className="admin-card-head"><div><h2>{config.title}</h2><p className="admin-muted">{config.description}</p></div><button className="admin-btn primary" onClick={() => edit()}><Plus size={17} />{config.singular}を追加</button></div>
       <div className="master-toolbar"><label className="master-search"><Search size={18} /><input aria-label={`${config.singular}を検索`} placeholder={`${config.singular}を検索…`} value={query} onChange={e => setQuery(e.target.value)} /></label><select className="admin-select" value={filter} onChange={e => setFilter(e.target.value)} aria-label="状態で絞り込む"><option value="all">すべての状態</option>{(config.path === 'products' ? Object.entries(productStatus) : activeOptions).map(([v, label]) => <option value={v} key={v}>{label}</option>)}</select><button className="admin-btn secondary master-icon-button" onClick={() => void refresh()} disabled={loading} aria-label="一覧を再読み込み"><RefreshCw size={17} className={loading ? 'master-spin' : ''} /></button><span className="admin-muted master-count">{filtered.length} 件</span></div>
-      <div className="admin-table-wrap"><table className="admin-table"><thead><tr>{config.columns.map(c => <th key={c.key}>{c.label}</th>)}<th>操作</th></tr></thead><tbody>
-        {loading ? <tr><td colSpan={config.columns.length + 1}><div className="master-empty"><Loader2 className="master-spin" size={22} />読み込み中…</div></td></tr> : filtered.length ? filtered.map(r => <tr key={r[idKey]} {...navigableRowProps(() => edit(r), `${r.name || r.dest_region || r[idKey]}を編集`)}>{config.columns.map(c => <td key={c.key}>{c.render ? c.render(r) : r[c.key] ?? '—'}</td>)}<td><button className="admin-btn secondary" onClick={() => edit(r)}>編集</button></td></tr>) : <tr><td colSpan={config.columns.length + 1}><div className="master-empty"><Boxes size={30} /><strong>{query || filter !== 'all' ? '条件に合うデータがありません' : `${config.singular}がまだ登録されていません`}</strong><span className="admin-muted">{query || filter !== 'all' ? '検索条件を変更してください。' : `「${config.singular}を追加」から登録してください。`}</span></div></td></tr>}
+      <div className={`admin-table-wrap ${config.path !== 'products' ? 'master-shipping-table-wrap' : ''}`}><table className={`admin-table ${config.path !== 'products' ? 'master-shipping-table' : ''}`}><thead><tr>{config.columns.map(c => <th key={c.key}>{c.label}</th>)}<th>操作</th></tr></thead><tbody>
+        {loading ? <tr><td colSpan={config.columns.length + 1}><div className="master-empty"><Loader2 className="master-spin" size={22} />読み込み中…</div></td></tr> : filtered.length ? filtered.map(r => <tr key={r[idKey]} {...navigableRowProps(() => edit(r), `${r.name || r.dest_region || r[idKey]}を編集`)}>{config.columns.map(c => <td key={c.key} data-label={c.label}>{c.render ? c.render(r) : r[c.key] ?? '—'}</td>)}<td data-label="操作"><button className="admin-btn secondary" onClick={() => edit(r)}>編集</button></td></tr>) : <tr><td colSpan={config.columns.length + 1}><div className="master-empty"><Boxes size={30} /><strong>{query || filter !== 'all' ? '条件に合うデータがありません' : `${config.singular}がまだ登録されていません`}</strong><span className="admin-muted">{query || filter !== 'all' ? '検索条件を変更してください。' : `「${config.singular}を追加」から登録してください。`}</span></div></td></tr>}
       </tbody></table></div>
     </section>
     {editor && <div className="master-modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget && !busy) setEditor(null); }}><section ref={dialogRef} tabIndex={-1} className="master-modal" role="dialog" aria-modal="true" aria-labelledby="master-editor-title"><header><div><span className="master-eyebrow">MASTER DATA</span><h2 id="master-editor-title">{config.singular}を{original ? '編集' : '追加'}</h2></div><button className="admin-btn secondary master-icon-button" aria-label="閉じる" onClick={() => setEditor(null)} disabled={busy}><X size={20} /></button></header><form onSubmit={save}><div className="master-modal-body"><Notice error={formError} /><Fields fields={config.fields} value={editor} setValue={setEditor} lockedKey={original ? config.key : undefined} /></div><footer>{original ? <button className="admin-btn danger master-delete-button" type="button" disabled={busy} onClick={() => void remove()}><Trash2 size={16} />削除する</button> : <span className="admin-muted">変更内容は監査ログに記録されます。</span>}<button className="admin-btn secondary" type="button" disabled={busy} onClick={() => setEditor(null)}>キャンセル</button><button className="admin-btn primary" disabled={busy} type="submit">{busy ? <Loader2 className="master-spin" size={17} /> : <Check size={17} />}{busy ? '保存中…' : '保存する'}</button></footer></form></section></div>}
@@ -400,6 +408,7 @@ function Resource({ config }: { config: ResourceConfig }) {
 }
 
 function DeliveryCalendar() {
+  const navigate = useNavigate();
   const [month, setMonth] = useState(() => new Date(new Date().getFullYear(), new Date().getMonth(), 1));
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
@@ -413,30 +422,37 @@ function DeliveryCalendar() {
   useEffect(() => { void refresh(); setSelected(null); }, [start]);
   const count = new Date(month.getFullYear(), month.getMonth() + 1, 0).getDate();
   const slots = Math.ceil((month.getDay() + count) / 7) * 7;
+  const closed = selected && Number(indexed.get(selected.date)?.is_deliverable) === 0;
   function move(delta: number) { setMonth(new Date(month.getFullYear(), month.getMonth() + delta, 1)); }
   async function save(event: FormEvent) {
-    event.preventDefault(); if (!selected) return;
-    setBusy(true); setError('');
+    event.preventDefault(); if (!selected || busy) return;
+    setBusy(true); setError(''); setSuccess('');
     try {
       const existing = indexed.has(selected.date);
-      await api(`/api/admin/calendar${existing ? `/${encodeURIComponent(selected.date)}` : ''}`, { method: existing ? 'PUT' : 'POST', body: JSON.stringify(selected) });
-      setSuccess(`${selected.date} の配送設定を保存しました。`); setSelected(null); await refresh();
+      const payload = { date: selected.date, is_deliverable: 0, reason: '休業日', note: selected.note || '' };
+      await api(`/api/admin/calendar${existing ? `/${encodeURIComponent(selected.date)}` : ''}`, { method: existing ? 'PUT' : 'POST', body: JSON.stringify(payload) });
+      await refresh(); setSuccess(`${selected.date} を休業日として保存しました。`);
     } catch (e) { setError(errorText(e)); } finally { setBusy(false); }
   }
   async function remove() {
-    if (!selected || busy || !indexed.has(selected.date)) return;
-    if (!window.confirm(`${selected.date} の個別設定を削除し、通常の配送ルールによる判定に戻しますか？過去の注文・監査履歴は保持されます。`)) return;
-    setBusy(true); setError('');
+    if (!selected || busy || !closed) return;
+    setBusy(true); setError(''); setSuccess('');
     try {
       await api(`/api/admin/calendar/${encodeURIComponent(selected.date)}`, { method: 'DELETE' });
-      setSuccess(`${selected.date} の個別設定を削除し、通常ルールに戻しました。`); setSelected(null); await refresh();
+      await refresh(); setSelected({ date: selected.date, note: '' }); setSuccess(`${selected.date} の休業日を解除しました。`);
     } catch (e) { setError(errorText(e)); } finally { setBusy(false); }
   }
-  return <><Notice error={error} success={success} /><section className="admin-card"><div className="admin-card-head"><div><h2>配送カレンダー</h2><p className="admin-muted">日付を選択して配送可否や休業理由を設定します。</p></div><div className="master-month-nav"><button className="admin-btn secondary master-icon-button" onClick={() => move(-1)} aria-label="前月"><ChevronLeft size={18} /></button><strong>{month.getFullYear()}年 {month.getMonth() + 1}月</strong><button className="admin-btn secondary master-icon-button" onClick={() => move(1)} aria-label="翌月"><ChevronRight size={18} /></button><button className="admin-btn secondary" onClick={() => setMonth(new Date(new Date().getFullYear(), new Date().getMonth(), 1))}>今月</button></div></div><div className="master-calendar-legend"><span><i className="master-dot good" />配送可能</span><span><i className="master-dot closed" />配送不可</span><span><i className="master-dot" />通常の配送ルール</span></div>
-      {loading ? <div className="master-empty"><Loader2 className="master-spin" />カレンダーを読み込み中…</div> : <div className="master-calendar"><div className="master-calendar-week">{['日', '月', '火', '水', '木', '金', '土'].map((d, i) => <span className={i === 0 ? 'sun' : i === 6 ? 'sat' : ''} key={d}>{d}</span>)}</div><div className="master-calendar-grid">{Array.from({ length: slots }, (_, index) => { const day = index - month.getDay() + 1; if (day < 1 || day > count) return <div className="master-calendar-blank" key={index} />; const date = dateKey(new Date(month.getFullYear(), month.getMonth(), day)); const entry = indexed.get(date); return <button key={date} className={`master-calendar-day ${entry ? entry.is_deliverable ? 'deliverable' : 'closed' : ''} ${selected?.date === date ? 'selected' : ''} ${date === nowDate() ? 'today' : ''}`} onClick={() => setSelected(entry ? { ...entry } : { date, is_deliverable: 1, reason: '', note: '' })} aria-label={`${date} ${entry ? entry.is_deliverable ? '配送可能' : `配送不可 ${entry.reason || ''}` : '通常ルール'}`}><span className={index % 7 === 0 ? 'sun' : index % 7 === 6 ? 'sat' : ''}>{day}</span><small>{entry ? entry.is_deliverable ? '配送可能' : entry.reason || '配送不可' : '通常ルール'}</small></button>; })}</div></div>}
-      <p className="admin-muted master-calendar-footnote">「通常ルール」の日は、配送ルール・営業日・リードタイムに基づいて注文可否を判定します。</p>
+  return <><Notice error={error} success={success} /><section className="admin-card"><div className="admin-card-head"><div><h2>配送カレンダー</h2><p className="admin-muted">通常は休みなしです。休む日だけ選んで登録してください。</p></div><div className="master-month-nav"><button className="admin-btn secondary master-icon-button" onClick={() => move(-1)} disabled={busy} aria-label="前月"><ChevronLeft size={18} /></button><strong>{month.getFullYear()}年 {month.getMonth() + 1}月</strong><button className="admin-btn secondary master-icon-button" onClick={() => move(1)} disabled={busy} aria-label="翌月"><ChevronRight size={18} /></button><button className="admin-btn secondary" disabled={busy} onClick={() => setMonth(new Date(new Date().getFullYear(), new Date().getMonth(), 1))}>今月</button></div></div><div className="master-calendar-legend"><span><i className="master-dot" />通常営業</span><span><i className="master-dot closed" />休業日</span></div>
+      {loading ? <div className="master-empty"><Loader2 className="master-spin" />カレンダーを読み込み中…</div> : <div className="master-calendar"><div className="master-calendar-week">{['日', '月', '火', '水', '木', '金', '土'].map((d, i) => <span className={i === 0 ? 'sun' : i === 6 ? 'sat' : ''} key={d}>{d}</span>)}</div><div className="master-calendar-grid">{Array.from({ length: slots }, (_, index) => {
+        const day = index - month.getDay() + 1;
+        if (day < 1 || day > count) return <div className="master-calendar-blank" key={index} />;
+        const date = dateKey(new Date(month.getFullYear(), month.getMonth(), day));
+        const entry = indexed.get(date), holiday = !!entry && Number(entry.is_deliverable) === 0;
+        return <button key={date} className={`master-calendar-day ${holiday ? 'closed' : ''} ${selected?.date === date ? 'selected' : ''} ${date === nowDate() ? 'today' : ''}`} disabled={busy} onClick={() => setSelected(entry ? { ...entry } : { date, note: '' })} aria-label={`${date} ${holiday ? '休業日' : '通常営業'}`} aria-pressed={selected?.date === date}><span>{day}</span>{holiday && <small>休業日</small>}</button>;
+      })}</div></div>}
+      <p className="admin-muted master-calendar-footnote">通常営業日でも、取引先の配送ルールと最短お届け日数により注文できる日が変わります。</p>
     </section>
-    {selected && <section className="admin-card master-day-editor"><div className="admin-card-head"><div><h2>{selected.date} の配送設定</h2><p className="admin-muted">個別の可否と、配送ルール・必要営業日数を合わせて判定します。個別設定を削除すると通常ルールに戻ります。</p></div><button className="admin-btn secondary master-icon-button" onClick={() => setSelected(null)} disabled={busy} aria-label="日付の編集を閉じる"><X size={18} /></button></div><form onSubmit={save}><Fields value={selected} setValue={setSelected} fields={[{ key: 'is_deliverable', label: 'この日は配送可能', type: 'checkbox' }, { key: 'reason', label: '配送不可理由', options: [['定休日', '定休日'], ['イベント出店', 'イベント出店'], ['休業日', '休業日'], ['その他', 'その他']] }, { key: 'note', label: '管理用メモ', type: 'textarea' }]} /><div className="master-form-actions">{indexed.has(selected.date) && <button className="admin-btn danger master-delete-button" type="button" disabled={busy} onClick={() => void remove()}><Trash2 size={16} />この日の個別設定を削除</button>}<button className="admin-btn primary" disabled={busy}>{busy ? <Loader2 size={17} className="master-spin" /> : <Check size={17} />}この日の設定を保存</button></div></form></section>}
+    {selected && <section className="admin-card master-day-editor"><div className="admin-card-head"><div><h2>{selected.date} <span className="master-day-status">{closed ? '休業日' : '通常営業'}</span></h2></div><button className="admin-btn secondary master-icon-button" onClick={() => setSelected(null)} disabled={busy} aria-label="日付の編集を閉じる"><X size={18} /></button></div><form onSubmit={save}><label className="admin-field"><span>休業メモ（任意）</span><input className="admin-input" placeholder="例：設備点検のため休業" value={selected.note || ''} onChange={e => setSelected({ ...selected, note: e.target.value })} maxLength={1000} /></label><div className="master-form-actions master-calendar-actions">{!closed && selected.date >= nowDate() && <button className="admin-btn primary master-calendar-order" type="button" disabled={busy || loading} onClick={() => navigate(`/admin/orders?create=1&desired_delivery_date=${encodeURIComponent(selected.date)}`)}><Plus size={17} />この日で注文を登録</button>}{closed && <button className="admin-btn secondary" type="button" disabled={busy || loading} onClick={() => void remove()}>休業日を解除</button>}<button className="admin-btn secondary" disabled={busy || loading}>{busy ? <Loader2 size={17} className="master-spin" /> : <Check size={17} />}{closed ? '休業メモを保存' : '休業日にする'}</button></div></form></section>}
   </>;
 }
 
@@ -460,17 +476,36 @@ const systemFields: Field[] = [
   { key: 'multi_parcel_discount_enabled', label: '複数個口割引を有効にする', type: 'checkbox' }, { key: 'multi_parcel_discount_amount', label: '複数個口の割引額（円）', type: 'number', min: 0, max: 1000000 },
 ];
 
-function SettingsForm({ type }: { type: 'company-info' | 'report-settings' | 'settings' }) {
+type SettingsTab = 'company-info' | 'report-settings' | 'settings' | 'shipping-features';
+function SettingsForm({ type, onSettingsSaved }: { type: SettingsTab; onSettingsSaved: (settings: Row) => void }) {
   const [form, setForm] = useState<Row>({}); const [loading, setLoading] = useState(true); const [busy, setBusy] = useState(false); const [error, setError] = useState(''); const [success, setSuccess] = useState('');
-  const fields = type === 'company-info' ? companyFields : type === 'report-settings' ? reportFields : systemFields;
-  useEffect(() => { let live = true; setLoading(true); setError(''); setSuccess(''); api<Row>(`/api/admin/${type}`).then(data => { if (live) setForm(data || {}); }).catch(e => { if (live) setError(errorText(e)); }).finally(() => { if (live) setLoading(false); }); return () => { live = false; }; }, [type]);
+  const endpoint = type === 'shipping-features' ? 'settings' : type;
+  const features = shippingFeatures(form);
+  const featureFields: Field[] = [
+    { key: 'packing_enabled', label: '梱包を使う', type: 'checkbox', wide: true, help: 'オフにすると梱包箱の選定・個口の計算と、ヤマトサイズ・運賃の自動計算を停止し、各管理タブを非表示にします。登録済みのマスタや過去の注文は保持します。' },
+    { key: 'yamato_sizes_enabled', label: 'ヤマトサイズを使う', type: 'checkbox', wide: true, disabled: !features.packing, hint: !features.packing ? '梱包を使うときに設定できます。' : undefined, help: 'オフにすると宅急便サイズの判定とヤマト運賃の自動計算を停止し、各管理タブを非表示にします。' },
+    { key: 'yamato_rates_enabled', label: 'ヤマト運賃を使う', type: 'checkbox', wide: true, disabled: !features.sizes, hint: !features.sizes ? '梱包とヤマトサイズを使うときに設定できます。' : undefined, help: 'オフにすると運賃の自動計算を停止し、ヤマト運賃の管理タブを非表示にします。有料配送には固定送料または管理者が注文ごとに指定する送料を使います。' },
+    ...(!features.rates ? [{ key: 'manual_shipping_fee', label: '自動計算を使わない場合の固定送料（税抜・円）', type: 'number', min: 0, max: 1000000, wide: true, placeholder: '1100', help: '有料のヤマト配送に適用する注文1件あたりの固定送料です。0を入力すると送料0円になります。空欄の場合、お客様からの有料配送の注文は受け付けず、管理者が注文ごとに送料を指定します。自社配達や送料無料の配送ルールは0円です。', hint: '未入力なら、管理者による注文登録時に送料を指定します。' }] : []),
+  ];
+  const fields = type === 'company-info' ? companyFields : type === 'report-settings' ? reportFields : type === 'shipping-features' ? featureFields : systemFields.filter(field => features.rates || !field.key.startsWith('multi_parcel_discount_'));
+  useEffect(() => { let live = true; setLoading(true); setError(''); setSuccess(''); api<Row>(`/api/admin/${endpoint}`).then(data => { if (live) setForm(endpoint === 'settings' ? { ...shippingDefaults, ...data } : data || {}); }).catch(e => { if (live) setError(errorText(e)); }).finally(() => { if (live) setLoading(false); }); return () => { live = false; }; }, [endpoint]);
   async function save(e: FormEvent) {
-    e.preventDefault(); if (!window.confirm(type === 'company-info' ? '会社情報・振込口座を保存します。今後発行する帳票に反映されます。保存しますか？' : '設定の変更を保存しますか？')) return;
+    e.preventDefault(); if (busy || !window.confirm(type === 'company-info' ? '会社情報・振込口座を保存します。今後発行する帳票に反映されます。保存しますか？' : '設定の変更を保存しますか？')) return;
     setBusy(true); setError(''); setSuccess('');
-    try { const payload = normalizeFields(form, fields); if (type === 'company-info' && payload.bank_account_number) payload.bank_account_number = String(payload.bank_account_number).padStart(7, '0'); if (type === 'settings') for (const field of fields) if (field.type === 'checkbox') payload[field.key] = payload[field.key] === 1 || payload[field.key] === 'true' || payload[field.key] === true ? 'true' : 'false'; await api(`/api/admin/${type}`, { method: 'PUT', body: JSON.stringify(payload) }); setSuccess('設定を保存しました。'); } catch (err) { setError(errorText(err)); } finally { setBusy(false); }
+    try {
+      const payload = normalizeFields(form, fields);
+      if (type === 'company-info' && payload.bank_account_number) payload.bank_account_number = String(payload.bank_account_number).padStart(7, '0');
+      if (endpoint === 'settings') {
+        for (const field of fields) if (field.type === 'checkbox') payload[field.key] = flagEnabled(payload[field.key]) ? 'true' : 'false';
+        if ('manual_shipping_fee' in payload) payload.manual_shipping_fee = String(payload.manual_shipping_fee ?? '');
+      }
+      const saved = await api<Row>(`/api/admin/${endpoint}`, { method: 'PUT', body: JSON.stringify(payload) });
+      const updated = endpoint === 'settings' ? saved : { ...form, ...payload };
+      setForm(updated); if (endpoint === 'settings') onSettingsSaved(updated); setSuccess('設定を保存しました。');
+    } catch (err) { setError(errorText(err)); } finally { setBusy(false); }
   }
-  const title = type === 'company-info' ? '会社情報・振込口座' : type === 'report-settings' ? '帳票設定' : '税・注文・通知設定';
-  return <section className="admin-card"><div className="admin-card-head"><div><h2>{title}</h2><p className="admin-muted">{type === 'company-info' ? '請求書・納品書に記載する発行元と振込先を設定します。' : type === 'report-settings' ? '帳票のタイトルや印字項目、備考の初期値を設定します。' : '税計算や注文期限、お問い合わせ先を設定します。価格は税抜で統一されます。'}</p></div>{type === 'company-info' ? <Landmark className="admin-muted" size={24} /> : <Settings2 className="admin-muted" size={24} />}</div><div className="master-settings-body"><Notice error={error} success={success} />{loading ? <div className="master-empty"><Loader2 className="master-spin" />設定を読み込み中…</div> : <form onSubmit={save}><Fields fields={fields} value={form} setValue={setForm} /><div className="master-form-actions"><span className="admin-muted">変更内容は監査ログに記録されます。</span><button className="admin-btn primary" disabled={busy}>{busy ? <Loader2 className="master-spin" size={17} /> : <Check size={17} />}{busy ? '保存中…' : '設定を保存'}</button></div></form>}</div></section>;
+  const title = type === 'company-info' ? '会社情報・振込口座' : type === 'report-settings' ? '帳票設定' : type === 'shipping-features' ? '配送・梱包機能' : '税・注文・通知設定';
+  return <section className="admin-card"><div className="admin-card-head"><div><h2>{title}</h2><p className="admin-muted">{type === 'company-info' ? '請求書・納品書に記載する発行元と振込先を設定します。' : type === 'report-settings' ? '帳票のタイトルや印字項目、備考の初期値を設定します。' : type === 'shipping-features' ? '使う機能だけオンにしてください。オフにした機能の管理タブと自動計算を停止します。' : '税計算や注文期限、お問い合わせ先を設定します。価格は税抜で統一されます。'}</p></div>{type === 'company-info' ? <Landmark className="admin-muted" size={24} /> : <Settings2 className="admin-muted" size={24} />}</div><div className="master-settings-body"><Notice error={error} success={success} />{loading ? <div className="master-empty"><Loader2 className="master-spin" />設定を読み込み中…</div> : <form onSubmit={save}><Fields fields={fields} value={form} setValue={setForm} />{type === 'shipping-features' && !features.rates && <p className="admin-muted master-feature-note">有料配送の送料：{form.manual_shipping_fee === '' || form.manual_shipping_fee == null ? '管理者が注文ごとに指定' : `1注文あたり ${yen(form.manual_shipping_fee)}（税抜）`}</p>}<div className="master-form-actions"><span className="admin-muted">変更内容は監査ログに記録されます。</span><button className="admin-btn primary" disabled={busy}>{busy ? <Loader2 className="master-spin" size={17} /> : <Check size={17} />}{busy ? '保存中…' : '設定を保存'}</button></div></form>}</div></section>;
 }
 
 const actions: Record<string, string> = { ORDER_CREATE: '注文作成', ORDER_UPDATE: '注文変更', ORDER_STATUS_UPDATE: '注文ステータス変更', ORDER_STATUS_CHANGE: '注文ステータス変更', ORDER_CANCEL: '注文キャンセル', PRICE_UPDATE: '単価変更', INVOICE_ISSUE: '請求書発行', INVOICE_VOID: '請求書無効化', INVITE_CREATE: '招待QR発行', INVITE_REVOKE: '招待QR無効化', PRODUCT_CREATE: '商品登録', PRODUCT_UPDATE: '商品変更', SETTINGS_UPDATE: '設定変更', COMPANY_CREATE: '取引先登録', COMPANY_UPDATE: '取引先変更', COMPANY_DELETE: '取引先削除', PRODUCT_DELETE: '商品削除', SHIPPING_RULE_DELETE: '配送ルール削除', CALENDAR_DELETE: '配送日削除', PACKAGING_DELETE: '梱包設定削除', YAMATO_RATE_DELETE: '運賃削除', ADDRESS_DELETE: '配送先削除', CONTRACT_DELETE: '契約削除', PRICE_DELETE: '単価削除', INVITE_DELETE: '招待QR削除' };
@@ -489,13 +524,24 @@ function Audit() {
 }
 
 export default function Masters({ section, userRole }: { section: string; userRole?: string }) {
-  const [shippingTab, setShippingTab] = useState('calendar'); const [settingsTab, setSettingsTab] = useState<'company-info' | 'settings' | 'report-settings' | 'line-rich-menu'>(() => new URLSearchParams(window.location.search).get('tab') === 'line-rich-menu' ? 'line-rich-menu' : 'company-info');
+  const [shippingTab, setShippingTab] = useState('calendar');
+  const [settingsTab, setSettingsTab] = useState<SettingsTab | 'line-rich-menu'>(() => new URLSearchParams(window.location.search).get('tab') === 'line-rich-menu' ? 'line-rich-menu' : 'company-info');
+  const [settings, setSettings] = useState<Row | null>(null), [settingsError, setSettingsError] = useState('');
+  useEffect(() => {
+    if (section !== 'shipping') return;
+    let live = true; setSettings(null); setSettingsError('');
+    api<Row>('/api/admin/settings').then(data => { if (live) setSettings({ ...shippingDefaults, ...data }); }).catch(e => { if (live) setSettingsError(errorText(e)); });
+    return () => { live = false; };
+  }, [section]);
+  const features = shippingFeatures(settings || {});
+  const shippingTabs = [['calendar', '配送カレンダー'], ...(settings && features.packing ? [['boxes', '梱包箱']] : []), ...(settings && features.sizes ? [['sizes', 'ヤマトサイズ']] : []), ...(settings && features.rates ? [['rates', 'ヤマト運賃']] : []), ['shipping-rules', '配送ルール']];
+  const currentShippingTab = shippingTabs.some(([key]) => key === shippingTab) ? shippingTab : 'calendar';
   const titles: Record<string, [string, string]> = { products: ['商品管理', '小島醸造のお酒と、商品に込めた想いを届ける。'], shipping: ['配送管理', '配送日・梱包・送料をまとめて管理します。'], settings: ['設定', '日々の業務にあわせて、システムの設定を整えます。'], audit: ['監査ログ', '大切な操作を、いつでも確認できるように。'] };
   const [title, subtitle] = titles[section] || titles.settings;
-  return <div className="master-page"><div className="admin-page-head"><div><p className="master-eyebrow">KOJIMA BREWERY / {section.toUpperCase()}</p><h1>{title}</h1><p className="admin-muted">{subtitle}</p></div>{section === 'products' ? <span className="master-heading-icon"><Wine size={25} /></span> : section === 'shipping' ? <span className="master-heading-icon"><Truck size={25} /></span> : null}</div>
+  return <div className={`master-page ${section === 'shipping' ? 'master-page-shipping' : ''}`}><div className="admin-page-head"><div><p className="master-eyebrow">KOJIMA BREWERY / {section.toUpperCase()}</p><h1>{title}</h1><p className="admin-muted">{subtitle}</p></div>{section === 'products' ? <span className="master-heading-icon"><Wine size={25} /></span> : section === 'shipping' ? <span className="master-heading-icon"><Truck size={25} /></span> : null}</div>
     {section === 'products' && <Resource config={productConfig} />}
-    {section === 'shipping' && <><div className="admin-tabs master-tabs" role="tablist" aria-label="配送管理メニュー">{[['calendar', '配送カレンダー'], ['boxes', '梱包箱'], ['sizes', 'ヤマトサイズ'], ['rates', 'ヤマト運賃'], ['shipping-rules', '配送ルール']].map(([key, label]) => <button key={key} role="tab" aria-selected={shippingTab === key} className={`admin-tab ${shippingTab === key ? 'active' : ''}`} onClick={() => setShippingTab(key)}>{key === 'calendar' && <CalendarDays size={16} />}{label}</button>)}</div>{shippingTab === 'calendar' ? <DeliveryCalendar /> : <Resource key={shippingTab} config={shippingConfigs[shippingTab]} />}</>}
-    {section === 'settings' && <><div className="admin-tabs master-tabs" role="tablist" aria-label="設定メニュー">{([['company-info', '会社情報・振込口座'], ['settings', '税・注文・通知'], ['report-settings', '帳票設定'], ['line-rich-menu', 'LINEリッチメニュー']] as const).map(([key, label]) => <button key={key} role="tab" aria-selected={settingsTab === key} className={`admin-tab ${settingsTab === key ? 'active' : ''}`} onClick={() => setSettingsTab(key)}>{label}</button>)}</div>{settingsTab === 'line-rich-menu' ? <RichMenu owner={userRole === 'owner'} /> : <SettingsForm key={settingsTab} type={settingsTab} />}</>}
+    {section === 'shipping' && <><Notice error={settingsError} /><div className="admin-tabs master-tabs" role="tablist" aria-label="配送管理メニュー">{shippingTabs.map(([key, label]) => <button key={key} role="tab" aria-selected={currentShippingTab === key} className={`admin-tab ${currentShippingTab === key ? 'active' : ''}`} onClick={() => setShippingTab(key)}>{key === 'calendar' && <CalendarDays size={16} />}{label}</button>)}</div>{currentShippingTab === 'calendar' ? <DeliveryCalendar /> : <Resource key={currentShippingTab} config={shippingConfigs[currentShippingTab]} />}</>}
+    {section === 'settings' && <><div className="admin-tabs master-tabs" role="tablist" aria-label="設定メニュー">{([['company-info', '会社情報・振込口座'], ['settings', '税・注文・通知'], ['shipping-features', '配送・梱包機能'], ['report-settings', '帳票設定'], ['line-rich-menu', 'LINEリッチメニュー']] as const).map(([key, label]) => <button key={key} role="tab" aria-selected={settingsTab === key} className={`admin-tab ${settingsTab === key ? 'active' : ''}`} onClick={() => setSettingsTab(key)}>{label}</button>)}</div>{settingsTab === 'line-rich-menu' ? <RichMenu owner={userRole === 'owner'} /> : <SettingsForm key={settingsTab} type={settingsTab} onSettingsSaved={setSettings} />}</>}
     {section === 'audit' && <Audit />}
   </div>;
 }

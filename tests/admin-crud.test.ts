@@ -127,6 +127,7 @@ describe('administrative deletion with real routes and transactional SQLite', ()
     ['rates', 'yamato_rates', 'first-seeded-row', 'id'],
     ['calendar', 'delivery_calendar', 'first-seeded-row', 'date'],
   ])('soft-deletes %s without removing its database identity', async (path, table, id, key) => {
+    if(path==='calendar') await ok('POST','/api/admin/calendar',{date:'2026-10-25',is_deliverable:0,reason:'臨時休業'});
     const recordId = id === 'first-seeded-row' ? String((db.sqlite.prepare(`SELECT ${key} FROM ${table} ORDER BY ${key} LIMIT 1`).get() as any)[key]) : id;
     await ok('DELETE', `/api/admin/${path}/${recordId}`);
     expect((await ok('GET', `/api/admin/${path}?page_size=1000`)).some((row: any) => String(row[key]) === recordId)).toBe(false);
@@ -146,6 +147,126 @@ describe('administrative deletion with real routes and transactional SQLite', ()
     const historical = await ok('GET', '/api/admin/orders/O202610190001');
     expect(historical.contract_id).toBe('contract-a');
     expect(historical.items[0].unit_price).toBe(2100);
+  });
+});
+
+describe('holiday-only calendar and optional shipping calculations', () => {
+  async function yamatoInput(extra: Record<string, unknown> = {}) {
+    const dates=await ok('GET','/api/admin/companies/company-b/delivery-dates?shipping_address_id=address-b');
+    return { request_id:crypto.randomUUID(),company_id:'company-b',shipping_address_id:'address-b',desired_delivery_date:dates[0],items:[{product_id:'samurai-300',quantity:2}],...extra };
+  }
+  async function customerB() {
+    return `kojima_session=${await signSession({ id:'TEST_LINE_USER_B',type:'customer',company_id:'company-b',name:'B担当者' },env)}`;
+  }
+
+  it('has no seeded holidays and restores a deleted holiday when the same date closes again', async () => {
+    expect(await ok('GET','/api/admin/calendar')).toEqual([]);
+    const input=await yamatoInput(),date=input.desired_delivery_date;
+    const dates=await ok('GET','/api/admin/companies/company-b/delivery-dates?shipping_address_id=address-b');
+    expect(dates).toHaveLength(90);
+    expect(dates.some((value:string)=>[0,6].includes(new Date(`${value}T00:00:00Z`).getUTCDay()))).toBe(true);
+    await ok('POST','/api/admin/calendar',{date,is_deliverable:0,reason:'臨時休業'});
+    expect((await request('POST','/api/admin/orders/quote',input)).error?.code).toBe('INVALID_DELIVERY_DATE');
+    await ok('DELETE',`/api/admin/calendar/${date}`);
+    expect((await ok('POST','/api/admin/orders/quote',input)).delivery_dates).toContain(date);
+    await ok('POST','/api/admin/calendar',{date,is_deliverable:0,reason:'再度休業'});
+    expect((await request('POST','/api/admin/orders/quote',input)).status).toBe(422);
+    expect(db.sqlite.prepare('SELECT count(*) count FROM delivery_calendar WHERE date=?').get(date)).toMatchObject({count:1});
+    expect(db.sqlite.prepare("SELECT count(*) count FROM audit_logs WHERE action='CALENDAR_RESTORE' AND target_id=?").get(date)).toMatchObject({count:1});
+  });
+
+  it('defaults all calculations on and validates switches and explicit fixed fees', async () => {
+    expect(await ok('GET','/api/admin/settings')).toMatchObject({packing_enabled:'true',yamato_sizes_enabled:'true',yamato_rates_enabled:'true',manual_shipping_fee:''});
+    for(const manual_shipping_fee of ['-1','1.5','1000001',null,'invalid']) expect((await request('PUT','/api/admin/settings',{manual_shipping_fee})).status).toBe(400);
+    expect((await request('PUT','/api/admin/settings',{packing_enabled:'yes'})).status).toBe(400);
+    const quoted=await ok('POST','/api/admin/orders/quote',await yamatoInput());
+    expect(quoted.shipping_fee_source).toBe('automatic');
+    expect(quoted.shipping_fee).toBeGreaterThan(0);
+    expect(quoted.shipping_features).toEqual({packing_enabled:true,yamato_sizes_enabled:true,yamato_rates_enabled:true});
+  });
+
+  it('stops fares while preserving package sizes and persists absent parcel fares as NULL', async () => {
+    await ok('PUT','/api/admin/settings',{yamato_rates_enabled:'false',manual_shipping_fee:'650'});
+    db.sqlite.exec("UPDATE yamato_rates SET status='inactive'");
+    const input=await yamatoInput(),cookie=await customerB();
+    const quoted=await ok('POST','/api/customer/quote',input,cookie);
+    expect(quoted).toMatchObject({shipping_fee:650,shipping_fee_source:'fixed',shipping_features:{packing_enabled:true,yamato_sizes_enabled:true,yamato_rates_enabled:false}});
+    expect(quoted.packages.length).toBeGreaterThan(0);
+    expect(quoted.packages.every((p:any)=>p.size_code!==null&&p.shipping_fee===null&&p.rate_type===null)).toBe(true);
+    const created=await ok('POST','/api/customer/orders',input,cookie);
+    expect(created).toMatchObject({shipping_fee:650,is_shipping_fee_manual:1,shipping_fee_source:'fixed'});
+    expect(created.packages.every((p:any)=>p.shipping_fee===null&&p.rate_type===null)).toBe(true);
+  });
+
+  it('turns sizes off with dependent fares without looking up either master', async () => {
+    const configured=await ok('PUT','/api/admin/settings',{yamato_sizes_enabled:'false',manual_shipping_fee:'500'});
+    expect(configured.yamato_rates_enabled).toBe('true');
+    db.sqlite.exec("UPDATE yamato_sizes SET status='inactive'; UPDATE yamato_rates SET status='inactive';");
+    const quoted=await ok('POST','/api/admin/orders/quote',await yamatoInput());
+    expect(quoted).toMatchObject({shipping_fee:500,shipping_features:{packing_enabled:true,yamato_sizes_enabled:false,yamato_rates_enabled:false}});
+    expect(quoted.packages.length).toBeGreaterThan(0);
+    expect(quoted.packages.every((p:any)=>p.size_code===null&&p.shipping_fee===null&&p.rate_type===null)).toBe(true);
+    const created=await ok('POST','/api/admin/orders',await yamatoInput());
+    expect(created.packages.every((p:any)=>p.size_code===null)).toBe(true);
+  });
+
+  it('requires an explicit fixed or admin fee when packing is off and never accepts a customer fee override', async () => {
+    await ok('PUT','/api/admin/settings',{packing_enabled:'false'});
+    db.sqlite.exec("UPDATE packaging_boxes SET status='inactive'; UPDATE yamato_sizes SET status='inactive'; UPDATE yamato_rates SET status='inactive';");
+    const input=await yamatoInput(),cookie=await customerB();
+    expect((await request('POST','/api/customer/quote',{...input,shipping_fee:0},cookie)).error?.code).toBe('SHIPPING_FEE_REQUIRED');
+    const manual=await ok('POST','/api/admin/orders/quote',{...input,shipping_fee:0});
+    expect(manual).toMatchObject({shipping_fee:0,shipping_fee_source:'manual',packages:[],shipping_features:{packing_enabled:false,yamato_sizes_enabled:false,yamato_rates_enabled:false}});
+    await ok('PUT','/api/admin/settings',{manual_shipping_fee:'0'});
+    expect(await ok('POST','/api/customer/quote',input,cookie)).toMatchObject({shipping_fee:0,shipping_fee_source:'fixed',packages:[]});
+  });
+
+  it('keeps own delivery and explicitly free Yamato shipping free without a fixed fee', async () => {
+    await ok('PUT','/api/admin/settings',{packing_enabled:'false'});
+    expect(await ok('POST','/api/admin/orders/quote',await orderInput())).toMatchObject({shipping_fee:0,shipping_fee_source:'free',packages:[]});
+    db.sqlite.exec("UPDATE shipping_rules SET is_free_shipping=1 WHERE id='RULE_YAMATO'");
+    expect(await ok('POST','/api/admin/orders/quote',await yamatoInput())).toMatchObject({shipping_fee:0,shipping_fee_source:'free',packages:[]});
+  });
+
+  it('preserves stored fees and package history when settings change and permits only admin to release a saved fee', async () => {
+    await ok('PUT','/api/admin/settings',{yamato_rates_enabled:'false',manual_shipping_fee:'650'});
+    const input=await yamatoInput(),cookie=await customerB(),created=await ok('POST','/api/customer/orders',input,cookie);
+    await ok('PUT','/api/admin/settings',{packing_enabled:'false',manual_shipping_fee:'800'});
+    const historical=await ok('GET',`/api/admin/orders/${created.id}`);
+    expect(historical.shipping_fee).toBe(650);
+    expect(historical.packages).toEqual(created.packages);
+    const retain=await ok('POST','/api/customer/quote',{...input,order_id:created.id,is_shipping_fee_manual:0,items:[{product_id:'samurai-300',quantity:3}]},cookie);
+    expect(retain).toMatchObject({shipping_fee:650,shipping_fee_source:'fixed'});
+    const reset=await ok('POST','/api/admin/orders/quote',{...input,order_id:created.id,is_shipping_fee_manual:0});
+    expect(reset).toMatchObject({shipping_fee:800,shipping_fee_source:'fixed'});
+    await ok('POST',`/api/admin/orders/${created.id}/lock`,{version:created.version});
+    const changed=await ok('PUT',`/api/admin/orders/${created.id}`,{...input,version:created.version,is_shipping_fee_manual:0});
+    expect(changed.shipping_fee).toBe(800);
+    const revision=db.sqlite.prepare('SELECT before_json FROM order_revisions WHERE order_id=?').get(created.id) as any;
+    expect(JSON.parse(revision.before_json).packages).toEqual(created.packages);
+  });
+
+  it('does not mistake an automatic zero fare after discount for a free-shipping contract', async () => {
+    await ok('PUT','/api/admin/settings',{multi_parcel_discount_enabled:'true',multi_parcel_discount_amount:'1000000'});
+    const input=await yamatoInput({items:[{product_id:'samurai-300',quantity:100}]}),created=await ok('POST','/api/admin/orders',input);
+    expect(created).toMatchObject({shipping_fee:0,shipping_fee_source:'automatic',is_shipping_fee_manual:0});
+    await ok('PUT','/api/admin/settings',{packing_enabled:'false'});
+    expect((await request('POST','/api/admin/orders/quote',{...input,order_id:created.id})).error?.code).toBe('SHIPPING_FEE_REQUIRED');
+  });
+});
+
+describe('reasonless customer cancellation', () => {
+  it('accepts version-only cancellation, records it, and retains version and invoice guards', async () => {
+    const input=await orderInput(),created=await ok('POST','/api/customer/orders',input,customerCookie);
+    expect((await request('POST',`/api/customer/orders/${created.id}/cancel`,{version:created.version+1},customerCookie)).status).toBe(409);
+    const cancelled=await ok('POST',`/api/customer/orders/${created.id}/cancel`,{version:created.version},customerCookie);
+    expect(cancelled).toMatchObject({status:'cancelled',version:created.version+1});
+    const logged=db.sqlite.prepare("SELECT after_json FROM audit_logs WHERE target_id=? AND action='ORDER_CANCEL'").get(created.id) as any;
+    expect(JSON.parse(logged.after_json)).toEqual({status:'cancelled',reason:''});
+    const second=await ok('POST','/api/customer/orders',await orderInput(),customerCookie);
+    expect((await request('POST',`/api/admin/orders/${second.id}/cancel`,{version:second.version})).status).toBe(400);
+    db.sqlite.prepare('UPDATE orders SET is_invoice_locked=1 WHERE id=?').run(second.id);
+    expect((await request('POST',`/api/customer/orders/${second.id}/cancel`,{version:second.version},customerCookie)).error?.code).toBe('INVOICE_LOCKED');
   });
 });
 

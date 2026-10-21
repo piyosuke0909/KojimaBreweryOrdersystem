@@ -45,7 +45,14 @@ export interface Product {
   short_description?: string; description?: string; commitment?: string; taste?: string; recommended_way?: string;
 }
 export interface Address { id: string; name?: string; address_name?: string; recipient_name?: string; postal_code?: string; prefecture?: string; city?: string; address_line1?: string; address_line2?: string; address?: string; phone?: string; is_default?: number; delivery_type?: string; }
-export interface Quote { items: any[]; packages: any[]; items_subtotal: number; shipping_fee: number; tax_amount: number; total_amount: number; is_reference_tax?: boolean; shipping_address?: Address; delivery_dates?: string[]; }
+export interface Quote {
+  items: any[]; packages: any[]; items_subtotal: number; shipping_fee: number; tax_amount: number; total_amount: number;
+  is_reference_tax?: boolean; shipping_address?: Address; delivery_dates?: string[];
+  shipping_features?: { packing_enabled: boolean; yamato_sizes_enabled: boolean; yamato_rates_enabled: boolean };
+  shipping_fee_source?: 'automatic' | 'fixed' | 'manual' | 'free';
+  delivery_method?: 'own_delivery' | 'yamato';
+  snap_shipping_method?: string; snap_carrier_name?: string;
+}
 export const productName = (product: Product | any) => product.name || product.product_name || '商品';
 export const addressName = (address?: Address | null) => address?.name || address?.address_name || address?.recipient_name || '配送先';
 export const addressText = (address?: Address | null) => address ? [address.prefecture, address.city, address.address_line1, address.address_line2].filter(Boolean).join('') || address.address || '' : '';

@@ -151,7 +151,7 @@ describe('demo helper safety and single-order workflow', () => {
     expect(api.settings.contact_email).toBe('existing@example.invalid');
     expect(api.tables.addresses.find((row) => row.id === preparation.addresses.yamato)?.is_default).toBe(1);
     expect(api.tables.addresses.find((row) => row.id === 'original-address')?.address_line1).toBe(before.addresses[0].address_line1);
-    expect(api.tables.calendar.filter((row) => row.note?.includes(MARKER)).length).toBe(103);
+    expect(api.tables.calendar).toEqual(before.calendar);
   });
 
   it('keeps a real default address while adding separate labelled addresses', async () => {

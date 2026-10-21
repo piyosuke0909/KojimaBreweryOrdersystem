@@ -1,4 +1,4 @@
-import { calculatePackages, computePricing, getDeliveryDates, canEditOrder, cancellationDeadline, jstDate, type PackagingBox, type YamatoSize, type YamatoRate } from '../../domain';
+import { calculatePackages, computePricing, getDeliveryDates, getShippingFeatures, canEditOrder, cancellationDeadline, jstDate, type PackagingBox, type YamatoSize, type YamatoRate } from '../../domain';
 import { actor, ApiError, assertChanges, atomic, audit, date, fail, insert, insertMany, integer, now, one, rows, settings, string, uid, update, type Row } from './common';
 import type { Context } from 'hono';
 import type { AppEnv } from '../types';
@@ -18,10 +18,10 @@ export async function orderDetail(c: Context<AppEnv>, order: Row) {
   ]);
   const lockActive=order.edit_locked_by && order.edit_lock_expires_at > now() && order.edit_locked_by!==actor(c).id;
   let deadline: string|null=null;
-  try { deadline=cancellationDeadline(order.desired_delivery_date,calendar as any,config); } catch { /* Missing historic calendar: leave unavailable. */ }
+  try { deadline=cancellationDeadline(order.desired_delivery_date,calendar as any,config); } catch { /* Invalid historic settings must not prevent reading the order. */ }
   let editable=false;
   try { editable=actor(c).type==='admin' ? !order.is_invoice_locked && order.status!=='cancelled' : canEditOrder(order as any,new Date(),calendar as any,config); }
-  catch { /* An old order outside the maintained calendar remains readable, but cannot be edited by a customer. */ }
+  catch { /* Invalid historic settings leave the order readable without permitting edits. */ }
   return {...order,items,packages,revisions,can_edit:Boolean(editable && !lockActive),edit_deadline:deadline};
 }
 export async function editable(c: Context<AppEnv>, order: Row, requireLock = false) {
@@ -89,20 +89,40 @@ export async function quote(c: Context<AppEnv>, input: Row, companyId: string, o
     if(price==null) fail(422,'PRICE_NOT_SET',`${product!.name}の単価が未設定です。`);
     return {product_id:productId,line_no:index+1,snap_product_name:original?.snap_product_name || product!.name,snap_category:original?.snap_category || product!.category,snap_volume_ml:original?.snap_volume_ml || product!.volume_ml,snap_unit:original?.snap_unit || product!.unit,unit_price:price,quantity,subtotal:price*quantity,weight_kg:product!.weight_kg};
   });
-  const [boxes,sizes,rates]=await Promise.all([rows(c.env.DB,"SELECT * FROM packaging_boxes WHERE status='active' AND deleted_at IS NULL"),rows(c.env.DB,"SELECT * FROM yamato_sizes WHERE status='active' AND deleted_at IS NULL"),rows(c.env.DB,"SELECT * FROM yamato_rates WHERE status='active' AND deleted_at IS NULL")]);
   const sameAddress=oldOrder?.shipping_address_id===addressId;
   const shippingMethod=sameAddress ? (oldOrder.snap_shipping_method==='自社配達'?'own_delivery':'yamato') : delivery.rule.delivery_method;
+  const shippingFeatures=getShippingFeatures(delivery.config);
+  const manualOverride=actor(c).type==='admin' && input.shipping_fee!=null ? integer(input.shipping_fee,'配送料',0,1000000) : null;
+  // An explicit per-order fee is a financial snapshot and survives quantity-only edits.
+  const resetManualFee=actor(c).type==='admin' && input.is_shipping_fee_manual===0;
+  const savedManualFee=sameAddress && oldOrder.is_shipping_fee_manual && !resetManualFee ? Number(oldOrder.shipping_fee) : null;
+  const freeShipping=shippingMethod==='own_delivery'||(sameAddress && oldOrder.shipping_fee_source ? oldOrder.shipping_fee_source==='free' : Boolean(delivery.rule.is_free_shipping));
+  let shippingFee:number|null=null,shippingFeeSource:'automatic'|'fixed'|'manual'|'free'='automatic';
+  if(manualOverride!==null || savedManualFee!==null) { shippingFee=manualOverride??savedManualFee;shippingFeeSource=manualOverride===null && oldOrder?.shipping_fee_source==='fixed'?'fixed':'manual'; }
+  else if(freeShipping) { shippingFee=0;shippingFeeSource='free'; }
+  else if(!shippingFeatures.yamato_rates_enabled) {
+    const fixed=delivery.config.manual_shipping_fee;
+    if(fixed==null || String(fixed).trim()==='') fail(422,'SHIPPING_FEE_REQUIRED','送料の自動計算が無効です。管理者が設定で固定送料を登録するか、この注文の配送料を指定してください。');
+    const amount=Number(fixed);
+    if(!/^\d+$/.test(String(fixed))||!Number.isSafeInteger(amount)||amount<0||amount>1000000) fail(422,'INVALID_SHIPPING_FEE','固定送料の設定が不正です。管理者にお問い合わせください。');
+    shippingFee=amount;shippingFeeSource='fixed';
+  }
+  const calculateRates=shippingFeatures.yamato_rates_enabled && shippingFee===null;
+  const [boxes,sizes,rates]=await Promise.all([
+    shippingFeatures.packing_enabled && shippingMethod!=='own_delivery' ? rows(c.env.DB,"SELECT * FROM packaging_boxes WHERE status='active' AND deleted_at IS NULL") : [],
+    shippingFeatures.yamato_sizes_enabled && shippingMethod!=='own_delivery' ? rows(c.env.DB,"SELECT * FROM yamato_sizes WHERE status='active' AND deleted_at IS NULL") : [],
+    calculateRates ? rows(c.env.DB,"SELECT * FROM yamato_rates WHERE status='active' AND deleted_at IS NULL") : []
+  ]);
   // Quantity-only edits retain the ordered destination, even after the address master is moved.
   const originalPrefecture=sameAddress ? String(oldOrder.snap_address).match(/^(東京都|北海道|(?:京都|大阪)府|.{2,3}県)/)?.[1] : null;
   let packing: any;
-  try { packing=calculatePackages(items.map((i: Row)=>({product_id:i.product_id,volume_ml:i.snap_volume_ml,quantity:i.quantity,weight_kg:i.weight_kg,line_no:i.line_no})),boxes as PackagingBox[],sizes as YamatoSize[],rates as YamatoRate[],{dest_region:originalPrefecture||delivery.address.prefecture,date:input.desired_delivery_date || today,delivery_method:shippingMethod,...delivery.config} as any); }
+  try { packing=calculatePackages(items.map((i: Row)=>({product_id:i.product_id,volume_ml:i.snap_volume_ml,quantity:i.quantity,weight_kg:i.weight_kg,line_no:i.line_no})),boxes as PackagingBox[],sizes as YamatoSize[],rates as YamatoRate[],{...delivery.config,dest_region:originalPrefecture||delivery.address.prefecture,date:input.desired_delivery_date || today,delivery_method:shippingMethod,yamato_rates_enabled:calculateRates} as any); }
   catch(error) { fail(422,'PACKAGING_UNAVAILABLE',error instanceof Error ? error.message : '梱包・送料を計算できませんでした。'); }
-  let shippingFee=shippingMethod==='own_delivery'||(!sameAddress&&delivery.rule.is_free_shipping) ? 0 : packing.shipping_fee;
-  if(actor(c).type==='admin' && input.shipping_fee!=null) shippingFee=integer(input.shipping_fee,'配送料',0,1000000);
+  shippingFee??=packing.shipping_fee;
   const taxConfig=oldOrder ? {...delivery.config,tax_rate:oldOrder.snap_tax_rate,tax_calc_unit:oldOrder.snap_tax_calc_unit,tax_rounding:oldOrder.snap_tax_rounding} : delivery.config;
   const totals=computePricing(items,{...taxConfig,shipping_fee:shippingFee} as any);
   const originalAddress=sameAddress ? {snap_recipient_name:oldOrder.snap_recipient_name,snap_postal_code:oldOrder.snap_postal_code,snap_address:oldOrder.snap_address,snap_phone:oldOrder.snap_phone} : null;
-  return {...totals,items,packages:packing.packages,shipping_address:delivery.address,shipping_snapshot:originalAddress,delivery_method:shippingMethod,delivery_dates:delivery.dates,config:taxConfig,company,shipping_fee:shippingFee,is_shipping_fee_manual:actor(c).type==='admin' && input.shipping_fee!=null?1:0};
+  return {...totals,items,packages:packing.packages,shipping_address:delivery.address,shipping_snapshot:originalAddress,delivery_method:shippingMethod,delivery_dates:delivery.dates,config:taxConfig,company,shipping_fee:shippingFee,is_shipping_fee_manual:['manual','fixed'].includes(shippingFeeSource)?1:0,shipping_features:shippingFeatures,shipping_fee_source:shippingFeeSource};
 }
 export function itemStatements(db: D1Database, orderId: string, q: Row) {
   const itemRows:Row[]=[],packageRows:Row[]=[],packageItems:Row[]=[];
@@ -119,7 +139,7 @@ export function itemStatements(db: D1Database, orderId: string, q: Row) {
 }
 function snapshotFields(input: Row, q: Row) {
   const a=q.shipping_address;
-  return {shipping_address_id:a.id,desired_delivery_date:input.desired_delivery_date,snap_recipient_name:a.name,snap_postal_code:a.postal_code,snap_address:[a.prefecture,a.city,a.address_line1,a.address_line2].filter(Boolean).join(''),snap_phone:a.phone,...q.shipping_snapshot,snap_shipping_method:q.delivery_method==='own_delivery'?'自社配達':'ヤマト宅急便',snap_carrier_name:q.delivery_method==='own_delivery'?'自社便':'ヤマト運輸',items_subtotal:q.items_subtotal,shipping_fee:q.shipping_fee,is_shipping_fee_manual:q.is_shipping_fee_manual,snap_tax_rate:Number(q.config.tax_rate??10),snap_tax_calc_unit:q.config.tax_calc_unit||'invoice',snap_tax_rounding:q.config.tax_rounding||'floor',tax_amount:q.tax_amount,total_amount:q.total_amount,note:input.note ? string(input.note,'備考',false,4000) : null};
+  return {shipping_address_id:a.id,desired_delivery_date:input.desired_delivery_date,snap_recipient_name:a.name,snap_postal_code:a.postal_code,snap_address:[a.prefecture,a.city,a.address_line1,a.address_line2].filter(Boolean).join(''),snap_phone:a.phone,...q.shipping_snapshot,snap_shipping_method:q.delivery_method==='own_delivery'?'自社配達':'ヤマト宅急便',snap_carrier_name:q.delivery_method==='own_delivery'?'自社便':'ヤマト運輸',items_subtotal:q.items_subtotal,shipping_fee:q.shipping_fee,is_shipping_fee_manual:q.is_shipping_fee_manual,shipping_fee_source:q.shipping_fee_source,snap_tax_rate:Number(q.config.tax_rate??10),snap_tax_calc_unit:q.config.tax_calc_unit||'invoice',snap_tax_rounding:q.config.tax_rounding||'floor',tax_amount:q.tax_amount,total_amount:q.total_amount,note:input.note ? string(input.note,'備考',false,4000) : null};
 }
 export async function createOrder(c: Context<AppEnv>, input: Row) {
   const who=actor(c), companyId=who.type==='customer'?who.company_id!:string(input.company_id,'取引先');
@@ -177,7 +197,7 @@ export async function cancelOrder(c: Context<AppEnv>, order: Row, input: Row) {
   if(order.status==='completed') fail(409,'ORDER_NOT_CANCELLABLE','納品完了した注文はキャンセルできません。');
   await editable(c,order);
   const version=integer(input.version,'バージョン',1), stamp=now();
-  const reason=string(input.reason,'取消理由',true,2000);
+  const reason=string(input.reason,'取消理由',actor(c).type==='admin',2000);
   await atomic(c.env.DB,[update(c.env.DB,'orders',{status:'cancelled',cancelled_at:stamp,updated_at:stamp,version:version+1,edit_lock_status:'unlocked',edit_locked_by:null,edit_locked_at:null,edit_lock_expires_at:null},'id=? AND version=? AND is_invoice_locked=0 AND (edit_locked_by IS NULL OR edit_locked_by=? OR edit_lock_expires_at<=?)',order.id,version,actor(c).id,stamp),assertChanges(c.env.DB,1,actor(c),'ORDER_CANCEL','orders',order.id,order,{status:'cancelled',reason},order.company_id)]);
   return orderDetail(c,await findOrder(c,order.id));
 }

@@ -187,12 +187,13 @@ adminRoutes.put('/settings',async c=>{
     if(limits[key] && (!/^\d+$/.test(value)||Number(value)<limits[key]![0]||Number(value)>limits[key]![1])) fail(400,'INVALID_INPUT',`${key}の値が不正です。`);
     if(key==='tax_calc_unit'&&!['invoice','order','item'].includes(value)) fail(400,'INVALID_INPUT','税計算単位が不正です。');
     if(key==='tax_rounding'&&!['floor','ceil','round'].includes(value)) fail(400,'INVALID_INPUT','端数処理が不正です。');
-    if(['shipping_taxable','multi_parcel_discount_enabled'].includes(key)&&!['true','false'].includes(value)) fail(400,'INVALID_INPUT','真偽値が不正です。');
+    if(['shipping_taxable','multi_parcel_discount_enabled','packing_enabled','yamato_sizes_enabled','yamato_rates_enabled'].includes(key)&&!['true','false'].includes(value)) fail(400,'INVALID_INPUT','真偽値が不正です。');
+    if(key==='manual_shipping_fee'&&value!==''&&(!/^\d+$/.test(value)||!Number.isSafeInteger(Number(value))||Number(value)>1000000)) fail(400,'INVALID_INPUT','固定送料は空欄または0〜1000000円の整数で指定してください。');
     if(key==='price_tax_type'&&value!=='excl') fail(400,'INVALID_INPUT','税抜を指定してください。');
     if(key==='cancel_cutoff_time'&&!/^([01]\d|2[0-3]):[0-5]\d$/.test(value)) fail(400,'INVALID_INPUT','締切時刻が不正です。');
     if(value.length>2000) fail(400,'INVALID_INPUT','設定値が長すぎます。');data[key]=value;
   }
-  const statements=Object.entries(data).map(([key,value])=>c.env.DB.prepare('UPDATE settings SET value=? WHERE key=?').bind(value,key));
+  const statements=Object.entries(data).map(([key,value])=>c.env.DB.prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').bind(key,value));
   statements.push(audit(c.env.DB,actor(c),'SETTINGS_UPDATE','settings','system',before,{...before,...data}));
   await atomic(c.env.DB,statements);return c.json({data:{...before,...data}});
 });
