@@ -3,6 +3,7 @@ import { actor, ApiError, assertChanges, atomic, audit, date, fail, insert, inse
 import type { Context } from 'hono';
 import type { AppEnv } from '../types';
 import { normalizeOrderStatus } from '../../shared/order-status';
+import { orderNotificationStatement } from './admin-notifications';
 
 export async function findOrder(c: Context<AppEnv>, id: string) {
   const who=actor(c);
@@ -173,7 +174,7 @@ export async function createOrder(c: Context<AppEnv>, input: Row) {
   const contract=await one(c.env.DB,"SELECT id FROM contracts WHERE company_id=? AND status='active' AND deleted_at IS NULL AND (start_date IS NULL OR start_date<=?) AND (end_date IS NULL OR end_date>=?) ORDER BY start_date DESC LIMIT 1",companyId,jstDate(new Date()),jstDate(new Date()));
   const order={id,request_id:requestId,company_id:companyId,contract_id:contract?.id||null,ordered_by_line_user_id:who.type==='customer'?who.id:notificationRecipient,ordered_by_name:who.name,ordered_at:stamp,updated_at:stamp,status:'received',...snapshotFields(input,q),version:1,is_invoice_locked:0,edit_lock_status:'unlocked'};
   try {
-    await atomic(c.env.DB,[insert(c.env.DB,'orders',order),...itemStatements(c.env.DB,id,q),insert(c.env.DB,'order_requests',{request_id:requestId,line_user_id:who.id,company_id:companyId,issued_at:stamp,processed_at:stamp,order_id:id,status:'completed'}),audit(c.env.DB,who,'ORDER_CREATE','orders',id,null,{...order,items:q.items},companyId)]);
+    await atomic(c.env.DB,[insert(c.env.DB,'orders',order),...itemStatements(c.env.DB,id,q),insert(c.env.DB,'order_requests',{request_id:requestId,line_user_id:who.id,company_id:companyId,issued_at:stamp,processed_at:stamp,order_id:id,status:'completed'}),audit(c.env.DB,who,'ORDER_CREATE','orders',id,null,{...order,items:q.items},companyId),orderNotificationStatement(c.env.DB,{...order,company_name:q.company?.name},'create')]);
   } catch(error) {
     if(!String(error).includes('UNIQUE constraint failed')) throw error;
     const duplicate=await one(c.env.DB,'SELECT * FROM orders WHERE request_id=? AND company_id=?',requestId,companyId);
@@ -190,7 +191,7 @@ export async function editOrder(c: Context<AppEnv>, order: Row, input: Row) {
   const q=await quote(c,input,order.company_id,order);
   const before=await orderDetail(c,order), stamp=now();
   const data={...snapshotFields(input,q),updated_at:stamp,version:version+1,edit_lock_status:'unlocked',edit_locked_by:null,edit_locked_at:null,edit_lock_expires_at:null};
-  const statements=[update(c.env.DB,'orders',data,"id=? AND version=? AND status IN ('received','confirmed','preparing') AND is_invoice_locked=0 AND edit_locked_by=? AND edit_lock_expires_at>?",order.id,version,actor(c).id,stamp),assertChanges(c.env.DB,1,actor(c),'ORDER_EDIT','orders',order.id,before,{...order,...data,items:q.items},order.company_id),c.env.DB.prepare('DELETE FROM order_package_items WHERE order_id=?').bind(order.id),c.env.DB.prepare('DELETE FROM order_packages WHERE order_id=?').bind(order.id),c.env.DB.prepare('DELETE FROM order_items WHERE order_id=?').bind(order.id),...itemStatements(c.env.DB,order.id,q),insert(c.env.DB,'order_revisions',{id:uid(),order_id:order.id,revision_no:version,changed_at:stamp,changer_type:actor(c).type,changer_id:actor(c).id,before_json:JSON.stringify(before),after_json:JSON.stringify({...order,...data,items:q.items}),before_total:order.total_amount,after_total:q.total_amount,note:input.note||null})];
+  const statements=[update(c.env.DB,'orders',data,"id=? AND version=? AND status IN ('received','confirmed','preparing') AND is_invoice_locked=0 AND edit_locked_by=? AND edit_lock_expires_at>?",order.id,version,actor(c).id,stamp),assertChanges(c.env.DB,1,actor(c),'ORDER_EDIT','orders',order.id,before,{...order,...data,items:q.items},order.company_id),c.env.DB.prepare('DELETE FROM order_package_items WHERE order_id=?').bind(order.id),c.env.DB.prepare('DELETE FROM order_packages WHERE order_id=?').bind(order.id),c.env.DB.prepare('DELETE FROM order_items WHERE order_id=?').bind(order.id),...itemStatements(c.env.DB,order.id,q),insert(c.env.DB,'order_revisions',{id:uid(),order_id:order.id,revision_no:version,changed_at:stamp,changer_type:actor(c).type,changer_id:actor(c).id,before_json:JSON.stringify(before),after_json:JSON.stringify({...order,...data,items:q.items}),before_total:order.total_amount,after_total:q.total_amount,note:input.note||null}),orderNotificationStatement(c.env.DB,{...order,...data},'edit')];
   await atomic(c.env.DB,statements);
   return orderDetail(c,await findOrder(c,order.id));
 }
@@ -207,6 +208,6 @@ export async function cancelOrder(c: Context<AppEnv>, order: Row, input: Row) {
   await editable(c,order);
   const version=integer(input.version,'バージョン',1), stamp=now();
   const reason=string(input.reason,'取消理由',actor(c).type==='admin',2000);
-  await atomic(c.env.DB,[update(c.env.DB,'orders',{status:'cancelled',cancelled_at:stamp,updated_at:stamp,version:version+1,edit_lock_status:'unlocked',edit_locked_by:null,edit_locked_at:null,edit_lock_expires_at:null},"id=? AND version=? AND status IN ('received','confirmed','preparing') AND is_invoice_locked=0 AND (edit_locked_by IS NULL OR edit_locked_by=? OR edit_lock_expires_at<=?)",order.id,version,actor(c).id,stamp),assertChanges(c.env.DB,1,actor(c),'ORDER_CANCEL','orders',order.id,order,{status:'cancelled',reason},order.company_id)]);
+  await atomic(c.env.DB,[update(c.env.DB,'orders',{status:'cancelled',cancelled_at:stamp,updated_at:stamp,version:version+1,edit_lock_status:'unlocked',edit_locked_by:null,edit_locked_at:null,edit_lock_expires_at:null},"id=? AND version=? AND status IN ('received','confirmed','preparing') AND is_invoice_locked=0 AND (edit_locked_by IS NULL OR edit_locked_by=? OR edit_lock_expires_at<=?)",order.id,version,actor(c).id,stamp),assertChanges(c.env.DB,1,actor(c),'ORDER_CANCEL','orders',order.id,order,{status:'cancelled',reason},order.company_id),orderNotificationStatement(c.env.DB,{...order,version:version+1,updated_at:stamp},'cancel')]);
   return orderDetail(c,await findOrder(c,order.id));
 }

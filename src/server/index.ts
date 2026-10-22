@@ -14,6 +14,9 @@ import { notifyWelcome } from './notifications';
 import { recordLineWebhookIdentityChecks } from './services/line-webhook-identity';
 import { prepareInvitationHandoff, registerPendingInvitation, resumeInvitationHandoff } from './services/line-invitation-handoff';
 import { emailRoutes } from './routes/email';
+import { adminNotificationRoutes } from './routes/admin-notifications';
+import { lineMessagesRoutes } from './routes/line-messages';
+import { receiveLineMessages } from './services/line-messages';
 
 export const app = new Hono<AppEnv>();
 app.use('/api/*',async(c,next)=>{
@@ -78,6 +81,8 @@ app.route('/api/public',publicRoutes);
 app.use('/api/admin/*',requireActor('admin'));
 app.use('/api/admin',requireActor('admin'));
 app.route('/api/admin/mail-settings',emailRoutes);
+app.route('/api/admin/notifications',adminNotificationRoutes);
+app.route('/api/admin',lineMessagesRoutes);
 app.route('/api/admin',adminRoutes);
 app.use('/api/customer/*',requireActor('customer'));
 app.use('/api/customer',requireActor('customer'));
@@ -93,6 +98,7 @@ app.post('/api/line/webhook',async c=>{
   if(!await crypto.subtle.verify('HMAC',key,bytes.slice().buffer as ArrayBuffer,new TextEncoder().encode(raw)))throw new HTTPException(401,{message:'署名が一致しません。'});
   // Only a precisely formatted, signed diagnostic message records a non-identifying match result.
   await recordLineWebhookIdentityChecks(c.env,raw);
+  await receiveLineMessages(c.env,raw);
   // Registration is performed only by the verified invitation flow. A follow event cannot bind a company.
   return c.json({data:{accepted:true}});
 });

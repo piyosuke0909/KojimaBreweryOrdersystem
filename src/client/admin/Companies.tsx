@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
   Search, Plus, ArrowLeft, Building2, MapPin, QrCode, Tag, FileText,
-  Pencil, Save, Copy, Printer, CircleCheck, Trash2, Users, Download, Ban,
+  Pencil, Save, Copy, Printer, CircleCheck, Trash2, Users, Download, Ban, MessageCircle,
 } from 'lucide-react';
 import QRCode from 'qrcode';
 import { api, apiRaw, money, date } from './api';
@@ -11,6 +11,7 @@ import {
   FieldHelp, useRowNavigation, navigableRowProps,
 } from './ui';
 import './invitations.css';
+import CompanyLineMessages from './CompanyLineMessages';
 
 type Row = Record<string, any>;
 type Field = {
@@ -165,9 +166,10 @@ function CompanyList() {
 
 function CompanyDetail({ id }: { id: string }) {
   const navigate = useNavigate();
+  const location = useLocation();
   const rowNavigation = useRowNavigation();
   const [company, setCompany] = useState<Row | null>(null);
-  const [tab, setTab] = useState('basic');
+  const [tab, setTab] = useState(() => new URLSearchParams(location.search).get('tab') === 'line-messages' ? 'line-messages' : 'basic');
   const [error, setError] = useState('');
   const [editing, setEditing] = useState<Editor | null>(null);
   const [rules, setRules] = useState<Row[]>([]);
@@ -185,6 +187,15 @@ function CompanyDetail({ id }: { id: string }) {
   const [qrLoading, setQrLoading] = useState<string | null>(null);
   const [qrError, setQrError] = useState('');
   const [qrNotice, setQrNotice] = useState('');
+
+  useEffect(() => { if (new URLSearchParams(location.search).get('tab') === 'line-messages') setTab('line-messages'); }, [location.search]);
+  function chooseTab(value: string) {
+    setTab(value); setError('');
+    const params = new URLSearchParams(location.search);
+    if (value === 'line-messages') params.set('tab', value);
+    else { params.delete('tab'); params.delete('line_user_id'); }
+    navigate({ pathname: location.pathname, search: params.toString() }, { replace: true });
+  }
 
   async function load() {
     try { const result = await api<Row>(`/api/admin/companies/${id}`); setCompany(result); return result; }
@@ -272,7 +283,7 @@ function CompanyDetail({ id }: { id: string }) {
 
   if (!company) return <><ErrorBox error={error} />{!error && <Loading />}</>;
   const tabs = [
-    ['basic', '基本情報', Building2], ['addresses', '配送先', MapPin], ['line', 'LINE利用者・招待QR', QrCode],
+    ['basic', '基本情報', Building2], ['addresses', '配送先', MapPin], ['line', 'LINE利用者・招待QR', QrCode], ['line-messages', 'LINEメッセージ', MessageCircle],
     ['prices', '販売単価', Tag], ['contracts', '契約・請求条件', FileText], ['orders', '注文履歴', FileText],
   ] as const;
   const activeInvitations = (company.invitations || []).filter((row: Row) => !row.deleted_at);
@@ -289,9 +300,11 @@ function CompanyDetail({ id }: { id: string }) {
       <div><span className="admin-eyebrow">BUSINESS PARTNER DETAIL</span><h1>{company.name}</h1><p>{company.contact_name ? `担当窓口：${company.contact_name}` : '取引先の詳細情報'}</p></div>
       <div className="admin-inline-actions"><Badge value={company.status} /><button className="admin-btn secondary" onClick={() => beginEdit('company', company)}><Pencil size={16} />取引先を編集</button><button className="admin-btn secondary" onClick={() => beginDelete('company', company)}><Trash2 size={16} />取引先を削除</button></div>
     </div>
-    <div className="admin-tabs">{tabs.map(([key, label, Icon]) => <button key={key} className={`admin-tab ${tab === key ? 'active' : ''}`} onClick={() => { setTab(key); setError(''); }}><Icon size={17} />{label}</button>)}</div>
+    <div className="admin-tabs">{tabs.map(([key, label, Icon]) => <button key={key} className={`admin-tab ${tab === key ? 'active' : ''}`} onClick={() => chooseTab(key)}><Icon size={17} />{label}</button>)}</div>
     <ErrorBox error={confirm ? '' : error} />
     {success && <div className="admin-alert success" role="status"><CircleCheck size={18} />{success}</div>}
+
+    {tab === 'line-messages' && <CompanyLineMessages companyId={id} companyName={company.name} companyActive={company.status === 'active'} />}
 
     {tab === 'basic' && <section {...navigableRowProps(() => beginEdit('company', company), `${company.name}の基本情報を編集`)} className="admin-card admin-clickable-row">
       <div className="admin-card-head"><h2>基本情報</h2><button className="admin-btn secondary" onClick={() => beginEdit('company', company)}><Pencil size={16} />編集</button></div>

@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { sqliteTable, text, integer, real, index, uniqueIndex, check } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, real, index, uniqueIndex, check, primaryKey } from 'drizzle-orm/sqlite-core';
 
 // SQL names and TypeScript properties intentionally match API payloads and D1 rows.
 export const admins = sqliteTable('admins', {
@@ -584,4 +584,62 @@ export const gmail_oauth_states = sqliteTable('gmail_oauth_states', {
   index('gmail_oauth_states_expires_idx').on(t.expires_at),
 ]);
 
-export const schema = { admins, companies, shipping_rules, shipping_addresses, invitations, line_users, contracts, products, company_product_prices, delivery_calendar, packaging_boxes, yamato_sizes, yamato_rates, orders, order_items, order_packages, order_package_items, order_revisions, order_requests, invoices, invoice_items, invoice_histories, audit_logs, company_info, settings, report_settings, email_notification_config, gmail_oauth_states };
+export const admin_notifications = sqliteTable('admin_notifications', {
+  id: text('id').primaryKey().notNull(),
+  event_key: text('event_key').notNull().unique(),
+  kind: text('kind').notNull(),
+  category: text('category').notNull(),
+  company_id: text('company_id').notNull().references(()=>companies.id,{onDelete:'cascade'}),
+  order_id: text('order_id').references(()=>orders.id,{onDelete:'cascade'}),
+  line_user_id: text('line_user_id').references(()=>line_users.id,{onDelete:'cascade'}),
+  title: text('title').notNull(),
+  created_at: text('created_at').notNull(),
+},(t)=>[
+  check('admin_notifications_kind',sql`kind IN ('order_created','order_updated','order_cancelled','line_message')`),
+  check('admin_notifications_category',sql`category IN ('orders','companies')`),
+  check('admin_notifications_target',sql`(category='orders' AND order_id IS NOT NULL AND kind IN ('order_created','order_updated','order_cancelled')) OR (category='companies' AND line_user_id IS NOT NULL AND kind='line_message')`),
+  index('admin_notifications_created_idx').on(sql`${t.created_at} DESC`,sql`${t.id} DESC`),
+  index('admin_notifications_thread_idx').on(t.company_id,t.line_user_id,t.kind),
+]);
+export const admin_notification_reads = sqliteTable('admin_notification_reads', {
+  notification_id: text('notification_id').notNull().references(()=>admin_notifications.id,{onDelete:'cascade'}),
+  admin_id: text('admin_id').notNull().references(()=>admins.id,{onDelete:'cascade'}),
+  read_at: text('read_at').notNull(),
+},(t)=>[
+  primaryKey({columns:[t.notification_id,t.admin_id]}),
+  index('admin_notification_reads_admin_idx').on(t.admin_id,t.notification_id),
+]);
+
+export const line_messages = sqliteTable('line_messages', {
+  id: text('id').primaryKey().notNull(),
+  company_id: text('company_id').notNull().references(()=>companies.id),
+  line_user_id: text('line_user_id').notNull().references(()=>line_users.id),
+  direction: text('direction').notNull(),
+  message_type: text('message_type').notNull().default('text'),
+  text: text('text').notNull(),
+  status: text('status').notNull(),
+  request_id: text('request_id').unique(),
+  webhook_event_id: text('webhook_event_id').unique(),
+  line_message_id: text('line_message_id').unique(),
+  notification_event_key: text('notification_event_key').unique(),
+  created_at: text('created_at').notNull(),
+  sent_at: text('sent_at'),
+  error_code: text('error_code'),
+  send_claim_id: text('send_claim_id'),
+  send_claimed_at: text('send_claimed_at'),
+  attempt_count: integer('attempt_count').notNull().default(0),
+},(t)=>[
+  check('line_messages_direction',sql`direction IN ('incoming','outgoing')`),
+  check('line_messages_length',sql`length(text)<=5000`),
+  check('line_messages_status',sql`status IN ('received','pending','sent','failed','unknown')`),
+  check('line_messages_attempts',sql`attempt_count>=0`),
+  check('line_messages_direction_status',sql`(direction='incoming' AND status='received') OR (direction='outgoing' AND request_id IS NOT NULL)`),
+  index('line_messages_conversation_idx').on(t.company_id,t.line_user_id,t.created_at),
+]);
+export const line_message_unsends = sqliteTable('line_message_unsends', {
+  line_message_id: text('line_message_id').notNull(),
+  line_user_id: text('line_user_id').notNull().references(()=>line_users.id),
+  created_at: text('created_at').notNull(),
+},(t)=>[primaryKey({columns:[t.line_message_id,t.line_user_id]})]);
+
+export const schema = { admins, companies, shipping_rules, shipping_addresses, invitations, line_users, contracts, products, company_product_prices, delivery_calendar, packaging_boxes, yamato_sizes, yamato_rates, orders, order_items, order_packages, order_package_items, order_revisions, order_requests, invoices, invoice_items, invoice_histories, audit_logs, company_info, settings, report_settings, email_notification_config, gmail_oauth_states, admin_notifications, admin_notification_reads, line_messages, line_message_unsends };

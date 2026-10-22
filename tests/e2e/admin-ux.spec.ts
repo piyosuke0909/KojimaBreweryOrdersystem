@@ -199,7 +199,7 @@ async function selectAdminCalendarDate(page: Page, date: string) {
   await day.click();
 }
 
-test('休業日だけを登録・解除でき、カレンダーの日付を注文フォームへ引き継いで見積できる', async ({ page }) => {
+test('配送カレンダーでは休業日だけを登録・解除し、注文登録への導線を表示しない', async ({ page }) => {
   const dates = (await (await page.request.get('/api/admin/companies/company-a/delivery-dates?shipping_address_id=address-a')).json()).data;
   const deliveryDate: string = dates[0];
   expect(deliveryDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
@@ -210,6 +210,7 @@ test('休業日だけを登録・解除でき、カレンダーの日付を注�
     await expect(page.getByText('通常は休みなしです。休む日だけ選んで登録してください。', { exact: true })).toBeVisible();
     await selectAdminCalendarDate(page, deliveryDate);
     const editor = page.locator('.master-day-editor');
+    await expect(editor.getByRole('button', { name: 'この日で注文を登録', exact: true })).toHaveCount(0);
     await editor.getByPlaceholder('例：設備点検のため休業', { exact: true }).fill('UI回帰テストの休業日');
     await editor.getByRole('button', { name: '休業日にする', exact: true }).click();
     await expect(page.locator(`.master-calendar-day[aria-label="${deliveryDate} 休業日"]`)).toBeVisible();
@@ -218,16 +219,12 @@ test('休業日だけを登録・解除でき、カレンダーの日付を注�
     expect(closedDates).not.toContain(deliveryDate);
     await editor.getByRole('button', { name: '休業日を解除', exact: true }).click();
     await expect(page.locator(`.master-calendar-day[aria-label="${deliveryDate} 通常営業"]`)).toBeVisible();
-    await editor.getByRole('button', { name: 'この日で注文を登録', exact: true }).click();
-    const form = page.getByRole('dialog', { name: '注文を登録', exact: true });
-    await expect(form).toBeVisible();
-    await form.getByRole('combobox', { name: '注文する取引先', exact: true }).selectOption('company-a');
-    await expect(form.locator('input[type="date"]')).toHaveValue(deliveryDate);
-    await form.getByRole('spinbutton', { name: '犬山忍冬酒：侍の酒 300mlの注文数量', exact: true }).fill('1');
-    await form.getByRole('button', { name: '送料・合計を確認', exact: true }).click();
-    await expect(form.getByRole('heading', { name: '登録内容の確認', exact: true })).toBeVisible();
-    await form.getByRole('button', { name: '戻る', exact: true }).click();
-    await expect(page).toHaveURL(/\/admin\/orders$/);
+    await expect(editor.getByRole('button', { name: 'この日で注文を登録', exact: true })).toHaveCount(0);
+    await expect(editor.getByRole('button', { name: '休業日にする', exact: true })).toBeVisible();
+    await expect(page.getByRole('dialog', { name: '注文を登録', exact: true })).toHaveCount(0);
+    await expect(page).toHaveURL(/\/admin\/shipping$/);
+    const reopenedDates = (await (await page.request.get('/api/admin/companies/company-a/delivery-dates?shipping_address_id=address-a')).json()).data;
+    expect(reopenedDates).toContain(deliveryDate);
   } finally {
     await page.request.delete(`/api/admin/calendar/${deliveryDate}`);
     if (original) expect((await page.request.post('/api/admin/calendar', { data: { date: original.date, is_deliverable: original.is_deliverable, reason: original.reason, note: original.note } })).ok()).toBe(true);

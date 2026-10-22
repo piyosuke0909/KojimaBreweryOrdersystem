@@ -9,13 +9,20 @@ const MATCHED='U'+'a'.repeat(32),UNKNOWN='U'+'b'.repeat(32),INACTIVE='U'+'c'.rep
 class SqliteD1{
   sqlite=new DatabaseSync(':memory:');
   prepare(sql:string){return new Statement(this,sql);}
+  async batch(statements:Statement[]){
+    this.sqlite.exec('BEGIN IMMEDIATE');
+    try{const results=statements.map(statement=>statement.execute());this.sqlite.exec('COMMIT');return results;}
+    catch(error){this.sqlite.exec('ROLLBACK');throw error;}
+  }
   binding(){return this as unknown as D1Database;}
 }
 class Statement{
   constructor(private db:SqliteD1,private sql:string,private args:any[]=[]){ }
   bind(...args:any[]){return new Statement(this.db,this.sql,args);}
   async first(){return this.db.sqlite.prepare(this.sql).get(...this.args)??null;}
-  async run(){const result=this.db.sqlite.prepare(this.sql).run(...this.args);return {success:true,meta:{changes:Number(result.changes)}};}
+  async all(){return {results:this.db.sqlite.prepare(this.sql).all(...this.args),success:true};}
+  execute(){const result=this.db.sqlite.prepare(this.sql).run(...this.args);return {success:true,meta:{changes:Number(result.changes)}};}
+  async run(){return this.execute();}
 }
 let db:SqliteD1,env:Bindings;
 beforeEach(()=>{

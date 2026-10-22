@@ -1,0 +1,31 @@
+.admin-notification-wrapper{position:relative;flex-shrink:0}
+.admin-notification-bell{position:relative;width:44px;height:44px;display:grid;place-items:center;border:1px solid #d2dce8;border-radius:8px;background:#fff;color:#314a67;cursor:pointer}
+.admin-notification-bell:hover,.admin-notification-bell[aria-expanded=true]{background:#f0f5fc;border-color:#9bb4d1}
+.admin-notification-bell-badge,.admin-notification-nav-badge{display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;padding:0 5px;border-radius:99px;background:#cf303d;color:#fff;font:700 10px/1 'Noto Sans JP',sans-serif;white-space:nowrap}
+.admin-notification-bell-badge{position:absolute;top:-6px;right:-7px;border:2px solid #fff;height:22px;min-width:22px}
+.admin-sidebar nav a{position:relative}
+.admin-notification-nav-badge{margin-left:auto;flex-shrink:0;vertical-align:middle}
+.admin-notification-sr-only{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}
+.admin-root.is-collapsed .admin-notification-nav-badge{position:absolute;top:4px;right:3px;min-width:18px;height:18px;padding:0 4px;font-size:9px;margin:0}
+.admin-notification-panel{position:absolute;top:calc(100% + 12px);right:0;z-index:90;width:390px;max-width:calc(100vw - 24px);max-height:calc(100dvh - 95px);overflow:auto;border:1px solid #c2d0df;border-radius:10px;background:#fff;box-shadow:0 10px 35px #18365330;color:#25394f;text-align:left;font-weight:400}
+.admin-notification-heading{padding:17px 16px;display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid #d7e1ec}
+.admin-notification-heading h2{font-size:16px;line-height:1.5;letter-spacing:0}
+.admin-notification-heading p{font-size:11px;color:#6b7b8d;margin:4px 0 0}
+.admin-notification-mark-all,.admin-notification-error button{display:inline-flex;align-items:center;justify-content:center;gap:5px;min-height:44px;padding:8px 10px;border:1px solid #bdccdd;border-radius:5px;background:#fff;color:#345776;font-size:11px!important;white-space:nowrap}
+.admin-notification-list{list-style:none;padding:0;margin:0}
+.admin-notification-list li+li{border-top:1px solid #dbe3ed}
+.admin-notification-list a{display:flex;align-items:flex-start;gap:10px;min-height:76px;padding:15px 16px;background:#fff}
+.admin-notification-list a:hover,.admin-notification-list a:focus-visible{background:#edf4fc}
+.admin-notification-list a.is-unread{background:#f5f8fd}
+.admin-notification-dot{width:7px;height:7px;margin-top:7px;border-radius:50%;background:#cf303d;flex-shrink:0}
+.admin-notification-dot.is-read{background:#cbd5df}
+.admin-notification-content{min-width:0;flex:1}
+.admin-notification-content strong{display:block;font-size:12px;line-height:1.8;font-weight:600;overflow-wrap:anywhere}
+.admin-notification-content small{display:flex;align-items:center;gap:7px 10px;flex-wrap:wrap;margin-top:6px;font-size:10px;color:#6c7d90;line-height:1.5}
+.admin-notification-content em{font-style:normal;color:#bc2535;font-weight:600}
+.admin-notification-error{padding:12px 16px;background:#fff5f4;color:#a73538;font-size:12px;line-height:1.7}
+.admin-notification-error p{margin:0 0 8px}
+.admin-notification-empty{padding:24px 16px;display:flex;align-items:center;justify-content:center;gap:8px;font-size:12px;color:#728294;margin:0}
+.admin-account-name{max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media(max-width:760px){.admin-notification-panel{position:fixed;top:69px;right:12px;max-height:calc(100dvh - 82px)}.admin-account-name{max-width:90px}.admin-root.is-collapsed .admin-notification-nav-badge{position:static;margin-left:auto;min-width:20px;height:20px;font-size:10px}}
+@media print{.admin-notification-wrapper{display:none!important}}

@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { Wine, Boxes, CalendarDays, Check, ChevronLeft, ChevronRight, CircleAlert, Landmark, Loader2, Plus, RefreshCw, Search, Settings2, ShieldCheck, Trash2, Truck, X } from 'lucide-react';
 import { api } from './api';
 import { FieldHelp, navigableRowProps } from './ui';
@@ -409,7 +408,6 @@ function Resource({ config }: { config: ResourceConfig }) {
 }
 
 function DeliveryCalendar() {
-  const navigate = useNavigate();
   const [month, setMonth] = useState(() => new Date(new Date().getFullYear(), new Date().getMonth(), 1));
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
@@ -453,7 +451,7 @@ function DeliveryCalendar() {
       })}</div></div>}
       <p className="admin-muted master-calendar-footnote">通常営業日でも、取引先の配送ルールと最短お届け日数により注文できる日が変わります。</p>
     </section>
-    {selected && <section className="admin-card master-day-editor"><div className="admin-card-head"><div><h2>{selected.date} <span className="master-day-status">{closed ? '休業日' : '通常営業'}</span></h2></div><button className="admin-btn secondary master-icon-button" onClick={() => setSelected(null)} disabled={busy} aria-label="日付の編集を閉じる"><X size={18} /></button></div><form onSubmit={save}><label className="admin-field"><span>休業メモ（任意）</span><input className="admin-input" placeholder="例：設備点検のため休業" value={selected.note || ''} onChange={e => setSelected({ ...selected, note: e.target.value })} maxLength={1000} /></label><div className="master-form-actions master-calendar-actions">{!closed && selected.date >= nowDate() && <button className="admin-btn primary master-calendar-order" type="button" disabled={busy || loading} onClick={() => navigate(`/admin/orders?create=1&desired_delivery_date=${encodeURIComponent(selected.date)}`)}><Plus size={17} />この日で注文を登録</button>}{closed && <button className="admin-btn secondary" type="button" disabled={busy || loading} onClick={() => void remove()}>休業日を解除</button>}<button className="admin-btn secondary" disabled={busy || loading}>{busy ? <Loader2 size={17} className="master-spin" /> : <Check size={17} />}{closed ? '休業メモを保存' : '休業日にする'}</button></div></form></section>}
+    {selected && <section className="admin-card master-day-editor"><div className="admin-card-head"><div><h2>{selected.date} <span className="master-day-status">{closed ? '休業日' : '通常営業'}</span></h2></div><button className="admin-btn secondary master-icon-button" onClick={() => setSelected(null)} disabled={busy} aria-label="日付の編集を閉じる"><X size={18} /></button></div><form onSubmit={save}><label className="admin-field"><span>休業メモ（任意）</span><input className="admin-input" placeholder="例：設備点検のため休業" value={selected.note || ''} onChange={e => setSelected({ ...selected, note: e.target.value })} maxLength={1000} /></label><div className="master-form-actions master-calendar-actions">{closed && <button className="admin-btn secondary" type="button" disabled={busy || loading} onClick={() => void remove()}>休業日を解除</button>}<button className={`admin-btn ${closed ? 'secondary' : 'primary'}`} disabled={busy || loading}>{busy ? <Loader2 size={17} className="master-spin" /> : <Check size={17} />}{closed ? '休業メモを保存' : '休業日にする'}</button></div></form></section>}
   </>;
 }
 
