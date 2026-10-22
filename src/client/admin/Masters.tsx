@@ -5,6 +5,7 @@ import { api } from './api';
 import { FieldHelp, navigableRowProps } from './ui';
 import { isGoogleDriveUrl, parseGoogleDriveImage, resolveProductImageUrl } from '../../shared/product-image';
 import RichMenu from './RichMenu';
+import EmailSettings from './EmailSettings';
 import './masters.css';
 
 type Row = Record<string, any>;
@@ -470,7 +471,7 @@ const reportFields: Field[] = [
 const systemFields: Field[] = [
   { key: 'tax_rate', label: '消費税率（%）', type: 'number', min: 0, max: 100, step: '1', required: true }, { key: 'tax_calc_unit', label: '税計算単位', required: true, options: [['invoice', '請求単位'], ['order', '注文単位'], ['item', '明細単位']] },
   { key: 'tax_rounding', label: '消費税の端数処理', required: true, options: [['floor', '切り捨て'], ['ceil', '切り上げ'], ['round', '四捨五入']] }, { key: 'shipping_taxable', label: '配送料を課税対象にする', type: 'checkbox' },
-  { key: 'cancel_business_days', label: '変更・キャンセル期限（営業日前）', type: 'number', min: 0, max: 365, required: true }, { key: 'cancel_cutoff_time', label: '変更・キャンセルの締切時刻', type: 'time', required: true }, { key: 'min_lead_business_days', label: '最短お届けまでの営業日数', type: 'number', min: 0, max: 365, required: true }, { key: 'notification_email', label: '注文通知先メール', type: 'email' },
+  { key: 'cancel_business_days', label: '変更・キャンセル期限（営業日前）', type: 'number', min: 0, max: 365, required: true }, { key: 'cancel_cutoff_time', label: '変更・キャンセルの締切時刻', type: 'time', required: true }, { key: 'min_lead_business_days', label: '最短お届けまでの営業日数', type: 'number', min: 0, max: 365, required: true },
   { key: 'contact_phone', label: 'お問い合わせ電話番号', type: 'tel' }, { key: 'contact_email', label: 'お問い合わせメール', type: 'email' }, { key: 'contact_hours', label: 'お問い合わせ受付時間' },
   { key: 'invite_default_max_uses', label: '招待QRの標準登録上限人数', type: 'number', min: 1, max: 10000 }, { key: 'edit_lock_minutes', label: '注文編集ロック（分）', type: 'number', min: 1, max: 60 },
   { key: 'multi_parcel_discount_enabled', label: '複数個口割引を有効にする', type: 'checkbox' }, { key: 'multi_parcel_discount_amount', label: '複数個口の割引額（円）', type: 'number', min: 0, max: 1000000 },
@@ -525,7 +526,10 @@ function Audit() {
 
 export default function Masters({ section, userRole }: { section: string; userRole?: string }) {
   const [shippingTab, setShippingTab] = useState('calendar');
-  const [settingsTab, setSettingsTab] = useState<SettingsTab | 'line-rich-menu'>(() => new URLSearchParams(window.location.search).get('tab') === 'line-rich-menu' ? 'line-rich-menu' : 'company-info');
+  const [settingsTab, setSettingsTab] = useState<SettingsTab | 'line-rich-menu' | 'email'>(() => {
+    const tab = new URLSearchParams(window.location.search).get('tab');
+    return tab === 'line-rich-menu' || tab === 'email' ? tab : 'company-info';
+  });
   const [settings, setSettings] = useState<Row | null>(null), [settingsError, setSettingsError] = useState('');
   useEffect(() => {
     if (section !== 'shipping') return;
@@ -541,7 +545,7 @@ export default function Masters({ section, userRole }: { section: string; userRo
   return <div className={`master-page ${section === 'shipping' ? 'master-page-shipping' : ''}`}><div className="admin-page-head"><div><p className="master-eyebrow">KOJIMA BREWERY / {section.toUpperCase()}</p><h1>{title}</h1><p className="admin-muted">{subtitle}</p></div>{section === 'products' ? <span className="master-heading-icon"><Wine size={25} /></span> : section === 'shipping' ? <span className="master-heading-icon"><Truck size={25} /></span> : null}</div>
     {section === 'products' && <Resource config={productConfig} />}
     {section === 'shipping' && <><Notice error={settingsError} /><div className="admin-tabs master-tabs" role="tablist" aria-label="配送管理メニュー">{shippingTabs.map(([key, label]) => <button key={key} role="tab" aria-selected={currentShippingTab === key} className={`admin-tab ${currentShippingTab === key ? 'active' : ''}`} onClick={() => setShippingTab(key)}>{key === 'calendar' && <CalendarDays size={16} />}{label}</button>)}</div>{currentShippingTab === 'calendar' ? <DeliveryCalendar /> : <Resource key={currentShippingTab} config={shippingConfigs[currentShippingTab]} />}</>}
-    {section === 'settings' && <><div className="admin-tabs master-tabs" role="tablist" aria-label="設定メニュー">{([['company-info', '会社情報・振込口座'], ['settings', '税・注文・通知'], ['shipping-features', '配送・梱包機能'], ['report-settings', '帳票設定'], ['line-rich-menu', 'LINEリッチメニュー']] as const).map(([key, label]) => <button key={key} role="tab" aria-selected={settingsTab === key} className={`admin-tab ${settingsTab === key ? 'active' : ''}`} onClick={() => setSettingsTab(key)}>{label}</button>)}</div>{settingsTab === 'line-rich-menu' ? <RichMenu owner={userRole === 'owner'} /> : <SettingsForm key={settingsTab} type={settingsTab} onSettingsSaved={setSettings} />}</>}
+    {section === 'settings' && <><div className="admin-tabs master-tabs" role="tablist" aria-label="設定メニュー">{([['company-info', '会社情報・振込口座'], ['settings', '税・注文・通知'], ['shipping-features', '配送・梱包機能'], ['report-settings', '帳票設定'], ['email', 'メール'], ['line-rich-menu', 'LINEリッチメニュー']] as const).map(([key, label]) => <button key={key} role="tab" aria-selected={settingsTab === key} className={`admin-tab ${settingsTab === key ? 'active' : ''}`} onClick={() => setSettingsTab(key)}>{label}</button>)}</div>{settingsTab === 'email' ? <EmailSettings owner={userRole === 'owner'} /> : settingsTab === 'line-rich-menu' ? <RichMenu owner={userRole === 'owner'} /> : <SettingsForm key={settingsTab} type={settingsTab} onSettingsSaved={setSettings} />}</>}
     {section === 'audit' && <Audit />}
   </div>;
 }

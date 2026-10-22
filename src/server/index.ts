@@ -13,6 +13,7 @@ import { registerInvitation } from './services/invitations';
 import { notifyWelcome } from './notifications';
 import { recordLineWebhookIdentityChecks } from './services/line-webhook-identity';
 import { prepareInvitationHandoff, registerPendingInvitation, resumeInvitationHandoff } from './services/line-invitation-handoff';
+import { emailRoutes } from './routes/email';
 
 export const app = new Hono<AppEnv>();
 app.use('/api/*',async(c,next)=>{
@@ -76,6 +77,7 @@ app.post('/api/public/invitations/register',async c=>{
 app.route('/api/public',publicRoutes);
 app.use('/api/admin/*',requireActor('admin'));
 app.use('/api/admin',requireActor('admin'));
+app.route('/api/admin/mail-settings',emailRoutes);
 app.route('/api/admin',adminRoutes);
 app.use('/api/customer/*',requireActor('customer'));
 app.use('/api/customer',requireActor('customer'));

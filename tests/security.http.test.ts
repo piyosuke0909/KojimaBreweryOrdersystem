@@ -253,22 +253,24 @@ describe('order integrity over HTTP', () => {
     expect(logs.filter((row: Json) => row.target_id === created.id)).toHaveLength(1);
   });
 
-  test('allows an administrator to correct a completed order while preserving customer restrictions', async () => {
+  test('keeps shipped contents immutable until an administrator explicitly corrects the status', async () => {
     const created = await makeOrder();
-    let order = created;
-    for (const status of ['confirmed', 'preparing', 'shipped', 'completed']) {
-      order = await admin.ok('POST', `/api/admin/orders/${created.id}/status`, { version: order.version, status });
-    }
-    expect((await detail(created.id)).can_edit).toBe(false);
+    const shipped = await admin.ok('POST', `/api/admin/orders/${created.id}/status`, { version: created.version, status: 'shipped' });
+    expect(await detail(created.id)).toMatchObject({status:'shipped',can_edit:false,can_cancel:false});
     expect((await customer.request('POST', `/api/customer/orders/${created.id}/lock`, {})).status).toBe(409);
+    expect((await admin.request('POST', `/api/admin/orders/${created.id}/lock`, {})).status).toBe(409);
+    expect((await admin.request('POST', `/api/admin/orders/${created.id}/cancel`, { version: shipped.version, reason: '発送済取消不可' })).status).toBe(409);
+    const reopened = await admin.ok('POST', `/api/admin/orders/${created.id}/status`, { version: shipped.version, status: 'received' });
     await admin.ok('POST', `/api/admin/orders/${created.id}/lock`, {});
     const corrected = await admin.ok('PUT', `/api/admin/orders/${created.id}`, {
-      version: order.version, shipping_address_id: addressId, desired_delivery_date: deliveryDate,
+      version: reopened.version, shipping_address_id: addressId, desired_delivery_date: deliveryDate,
       items: [{ product_id: 'samurai-300', quantity: 3 }],
     });
-    expect(corrected.status).toBe('completed');
+    expect(corrected.status).toBe('received');
     expect(corrected.items[0].quantity).toBe(3);
-    expect((await admin.request('POST', `/api/admin/orders/${created.id}/cancel`, { version: corrected.version, reason: '完了後取消不可' })).status).toBe(409);
+    const reshipped = await admin.ok('POST', `/api/admin/orders/${created.id}/status`, { version: corrected.version, status: 'shipped' });
+    expect((await admin.request('POST', `/api/admin/orders/${created.id}/cancel`, { version: reshipped.version, reason: '発送済取消不可' })).status).toBe(409);
+    expect((await detail(created.id)).items[0].quantity).toBe(3);
   });
 
   test('locks issued orders and keeps historical invoice print data immutable', async () => {

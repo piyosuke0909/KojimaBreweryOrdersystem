@@ -10,6 +10,7 @@ import Orders from './Orders';
 import Companies from './Companies';
 import Invoices from './Invoices';
 import Masters from './Masters';
+import { hasPendingEmailOAuthCallback } from './EmailSettings';
 import Reports from '../Reports';
 import '../admin.css';
 
@@ -22,7 +23,7 @@ export default function AdminApp() {
  useEffect(check,[]);
  useEffect(()=>setMobile(false),[location.pathname]);
  if(checking) return <div className="admin-root"><Loading/></div>;
- if(!user || location.pathname==='/admin/login')return <Login onLogin={()=>{check();navigate('/admin')}}/>;
+ if(!user || location.pathname==='/admin/login')return <Login onLogin={()=>{check();navigate(hasPendingEmailOAuthCallback()?'/admin/settings?tab=email':'/admin')}}/>;
  async function logout(){try{await api('/api/auth/logout',{method:'POST'});setUser(null);navigate('/admin/login')}catch(e){window.alert((e as Error).message)}}
  return <div className={`admin-root ${collapsed?'is-collapsed':''} ${mobile?'mobile-open':''}`}>
   {mobile&&<button className="admin-sidebar-shade" aria-label="メニューを閉じる" onClick={()=>setMobile(false)}/>}
@@ -51,7 +52,7 @@ function Dashboard(){
  const [data,setData]=useState<any>(null),[error,setError]=useState('');
  useEffect(()=>{api('/api/admin/dashboard').then(setData).catch(e=>setError(e.message))},[]);
  const now=new Date(),today=new Intl.DateTimeFormat('ja-JP',{year:'numeric',month:'long',day:'numeric',weekday:'short',timeZone:'Asia/Tokyo'}).format(now);
- const cards=[{label:'本日の新規注文',key:'new_orders',yesterday:'yesterday_new_orders',icon:ShoppingCart,tone:'blue',href:'/admin/orders'},{label:'確認待ち',key:'pending_confirmation',yesterday:'yesterday_pending_confirmation',icon:FileText,tone:'gold',href:'/admin/orders?status=received'},{label:'本日の到着予定',key:'arriving_today',yesterday:'yesterday_arriving_today',icon:Truck,tone:'green',href:`/admin/orders?delivery_date=${new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Tokyo'}).format(now)}`},{label:'配送準備中',key:'preparing',yesterday:'yesterday_preparing',icon:PackageIcon,tone:'violet',href:'/admin/orders?status=preparing'}];
+ const cards=[{label:'本日の新規注文',key:'new_orders',yesterday:'yesterday_new_orders',icon:ShoppingCart,tone:'blue',href:'/admin/orders'},{label:'受付済の注文',key:'pending_confirmation',yesterday:'yesterday_pending_confirmation',icon:FileText,tone:'gold',href:'/admin/orders?status=received'},{label:'本日の到着予定',key:'arriving_today',yesterday:'yesterday_arriving_today',icon:Truck,tone:'green',href:`/admin/orders?delivery_date=${new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Tokyo'}).format(now)}`},{label:'発送済の注文',key:'shipped',yesterday:'',icon:PackageIcon,tone:'violet',href:'/admin/orders?status=shipped'}];
  return <><div className="admin-page-head dashboard"><div><span className="admin-eyebrow">OVERVIEW</span><h1>ダッシュボード</h1><p>本日の受注・配送状況をご確認いただけます。</p></div><div className="admin-today">{today}</div></div><ErrorBox error={error}/>{!data&&!error?<Loading/>:<><div className="admin-kpi-grid">{cards.map(({label,key,yesterday,icon:Icon,tone,href})=><Link key={key} to={href} className={`admin-kpi ${tone}`}><span className="admin-kpi-icon"><Icon size={31} strokeWidth={1.7}/></span><div className="admin-kpi-body"><span className="admin-kpi-label">{label}</span><div className="admin-kpi-number">{Number(data?.[key]||0)}<span>件</span></div><div className="admin-kpi-compare">{data?.[yesterday]!=null?<><span>昨日：{data[yesterday]}件</span>{data[key]>data[yesterday]?<ArrowUpRight size={18}/>:data[key]<data[yesterday]?<ArrowDownRight size={18}/>:<Minus size={18}/>}</>:<span>最新の受注状況</span>}</div></div></Link>)}</div><section className="admin-card admin-recent"><div className="admin-card-head"><div><h2>最近の注文</h2><span className="admin-muted">新しく届いた注文を確認しましょう</span></div><Link className="admin-text-link" to="/admin/orders">すべての注文を見る</Link></div><OrderTable orders={data?.recent_orders||[]}/></section><section className="admin-card admin-quick"><div className="admin-card-head"><h2>クイックメニュー</h2></div><div className="admin-quick-grid">{[['orders','注文管理','注文の確認・編集・ステータス変更',ShoppingCart],['companies','取引先管理','取引先・配送先・LINE利用者',Users],['products','商品管理','商品情報・販売単価',Wine],['shipping','配送管理','配送カレンダー・梱包・送料',Truck],['invoices','請求管理','請求書の作成・発行・履歴',FileText],['settings','設定','会社情報・税・帳票・その他',Settings]].map(([path,title,description,Icon]:any)=><Link className="admin-quick-item" key={path} to={`/admin/${path}`}><span className="admin-quick-icon"><Icon size={25} strokeWidth={1.8}/></span><div><strong>{title}</strong><span>{description}</span></div></Link>)}</div></section><div className="admin-help-note"><ShieldCheck size={15}/>大切な変更は履歴に記録されます。安心して日々の業務にお使いいただけます。</div></> }</>
 }
 function PackageIcon(props:any){return <svg {...props} width={props.size} height={props.size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={props.strokeWidth}><path d="m12 2 9 5v10l-9 5-9-5V7l9-5Z"/><path d="m3 7 9 5 9-5M12 12v10M7.5 4.5l9 5"/></svg>}

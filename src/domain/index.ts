@@ -1,4 +1,5 @@
 /** Pure business rules. Money uses integer yen, calendar dates use JST, and no I/O occurs here. */
+import { normalizeOrderStatus } from '../shared/order-status';
 export class DomainError extends Error {
   constructor(public readonly code: string, message: string) { super(message); this.name = 'DomainError'; }
 }
@@ -129,7 +130,7 @@ export function cancellationDeadline(deliveryDate: string, calendar: CalendarDay
 }
 export interface EditableOrder { status: string; is_invoice_locked: Flag; desired_delivery_date: string; edit_lock_status?: string; edit_lock_expires_at?: string | null; edit_locked_by?: string | null }
 export function canEditOrder(order: EditableOrder, now: Date | string, calendar: CalendarDay[], settings: CalendarSettings = {}): boolean {
-  if (!['received', 'confirmed'].includes(order.status) || enabled(order.is_invoice_locked)) return false;
+  if (normalizeOrderStatus(order.status) !== 'received' || enabled(order.is_invoice_locked)) return false;
   const at = new Date(now).getTime();
   if (!Number.isFinite(at)) throw new DomainError('INVALID_DATE', '日時が不正です。');
   return at <= new Date(cancellationDeadline(order.desired_delivery_date, calendar, settings)).getTime();

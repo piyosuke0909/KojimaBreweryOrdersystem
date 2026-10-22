@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { X, LoaderCircle, Inbox, AlertCircle, ChevronLeft, ChevronRight } from 'lucide-react';
 import { labels } from './api';
+import { normalizeOrderStatus } from '../../shared/order-status';
 
 /** Keep the real link/button in the row for assistive technology and new-tab actions. */
 export function navigableRowProps(onActivate:()=>void,label:string) {
@@ -39,7 +40,7 @@ export function FieldHelp({label,help,hideLabel=false}:{label:string;help:ReactN
  },[open]);
  return <span className="admin-field-help">{!hideLabel&&<span>{label}</span>}<button ref={button} type="button" className="admin-help-button" aria-label={`${label}の説明`} aria-expanded={open} aria-controls={open?id:undefined} onClick={e=>{e.preventDefault();e.stopPropagation();setOpen(!open)}}>?</button>{open&&createPortal(<div ref={panel} className="admin-help-popover" id={id} role="note" aria-label={`${label}の説明`} style={position}><strong>{label}</strong><button type="button" className="admin-help-close" aria-label="説明を閉じる" onClick={()=>{setOpen(false);button.current?.focus()}}><X size={15}/></button><div>{help}</div></div>,document.body)}</span>
 }
-export function Badge({value}:{value:string}) { return <span className={`admin-badge ${value}`}>{labels[value] || value}</span> }
+export function Badge({value}:{value:string}) { const status=normalizeOrderStatus(value);return <span className={`admin-badge ${status}`}>{labels[status] || status}</span> }
 export function Loading() { return <div className="admin-state" role="status"><LoaderCircle className="admin-spin" size={26}/><span>読み込んでいます…</span></div> }
 export function Empty({text='該当するデータがありません'}:{text?:string}) { return <div className="admin-state"><Inbox size={34}/><strong>{text}</strong><span>検索条件を変更するか、新しく登録してください。</span></div> }
 export function ErrorBox({error}:{error:string}) { return error ? <div className="admin-alert error" role="alert"><AlertCircle size={18}/>{error}</div> : null }

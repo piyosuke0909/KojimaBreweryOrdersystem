@@ -19,7 +19,7 @@ test('管理者ログインからダッシュボードと業務画面を開け�
   await expect(page.getByRole('heading', { name: '管理者ログイン' })).toBeVisible();
   await page.getByRole('button', { name: 'デモ環境を開く' }).click();
   await expect(page.getByRole('heading', { name: 'ダッシュボード', exact: true })).toBeVisible();
-  for (const label of ['本日の新規注文', '確認待ち', '本日の到着予定', '配送準備中']) {
+  for (const label of ['本日の新規注文', '受付済の注文', '本日の到着予定', '発送済の注文']) {
     await expect(page.locator('.admin-kpi').filter({ hasText: label })).toBeVisible();
   }
   await expect(page.getByRole('heading', { name: '最近の注文' })).toBeVisible();

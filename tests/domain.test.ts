@@ -98,8 +98,8 @@ describe('holiday exceptions and JST deadlines', () => {
     expect(cancellationDeadline(order.desired_delivery_date, calendar)).toBe('2026-09-29T17:00:00+09:00');
     expect(canEditOrder(order, '2026-09-29T08:00:00.000Z', calendar)).toBe(true);
     expect(canEditOrder(order, '2026-09-29T08:00:00.001Z', calendar)).toBe(false);
-    expect(canEditOrder({ ...order, status: 'confirmed' }, '2026-09-28T08:00:00Z', calendar)).toBe(true);
-    for (const status of ['preparing', 'shipped', 'completed', 'cancelled']) expect(canEditOrder({ ...order, status }, '2026-09-28T08:00:00Z', calendar)).toBe(false);
+    for (const status of ['confirmed', 'preparing']) expect(canEditOrder({ ...order, status }, '2026-09-28T08:00:00Z', calendar)).toBe(true);
+    for (const status of ['shipped', 'completed', 'cancelled']) expect(canEditOrder({ ...order, status }, '2026-09-28T08:00:00Z', calendar)).toBe(false);
     expect(canEditOrder({ ...order, is_invoice_locked: 1 }, '2026-09-28T08:00:00Z', calendar)).toBe(false);
   });
 });

@@ -545,4 +545,43 @@ export const report_settings = sqliteTable('report_settings', {
   check('report_settings_check_6', sql`show_email IN (0,1)`),
 ]);
 
-export const schema = { admins, companies, shipping_rules, shipping_addresses, invitations, line_users, contracts, products, company_product_prices, delivery_calendar, packaging_boxes, yamato_sizes, yamato_rates, orders, order_items, order_packages, order_package_items, order_revisions, order_requests, invoices, invoice_items, invoice_histories, audit_logs, company_info, settings, report_settings };
+export const email_notification_config = sqliteTable('email_notification_config', {
+  id: integer('id').primaryKey().notNull(),
+  provider: text('provider').notNull().default('gmail'),
+  enabled: integer('enabled').notNull().default(0),
+  recipients_json: text('recipients_json').notNull().default('[]'),
+  sender_email: text('sender_email').notNull().default(''),
+  notify_created: integer('notify_created').notNull().default(1),
+  notify_edited: integer('notify_edited').notNull().default(0),
+  notify_cancelled: integer('notify_cancelled').notNull().default(1),
+  gmail_client_id: text('gmail_client_id').notNull().default(''),
+  gmail_client_secret_ciphertext: text('gmail_client_secret_ciphertext'),
+  gmail_refresh_token_ciphertext: text('gmail_refresh_token_ciphertext'),
+  app_origin: text('app_origin').notNull(),
+  version: integer('version').notNull().default(1),
+  updated_at: text('updated_at').notNull(),
+},(t)=>[
+  check('email_notification_config_singleton',sql`id = 1`),
+  check('email_notification_config_provider',sql`provider IN ('gmail','resend')`),
+  check('email_notification_config_enabled',sql`enabled IN (0,1)`),
+  check('email_notification_config_recipients',sql`json_valid(recipients_json)`),
+  check('email_notification_config_created',sql`notify_created IN (0,1)`),
+  check('email_notification_config_edited',sql`notify_edited IN (0,1)`),
+  check('email_notification_config_cancelled',sql`notify_cancelled IN (0,1)`),
+]);
+export const gmail_oauth_states = sqliteTable('gmail_oauth_states', {
+  state_hash: text('state_hash').primaryKey().notNull(),
+  admin_id: text('admin_id').notNull().references(()=>admins.id),
+  code_verifier_ciphertext: text('code_verifier_ciphertext').notNull(),
+  client_id: text('client_id').notNull(),
+  redirect_uri: text('redirect_uri').notNull(),
+  config_version: integer('config_version').notNull(),
+  created_at: text('created_at').notNull(),
+  expires_at: text('expires_at').notNull(),
+},(t)=>[
+  check('gmail_oauth_states_hash',sql`length(state_hash) = 64`),
+  check('gmail_oauth_states_lifetime',sql`expires_at > created_at`),
+  index('gmail_oauth_states_expires_idx').on(t.expires_at),
+]);
+
+export const schema = { admins, companies, shipping_rules, shipping_addresses, invitations, line_users, contracts, products, company_product_prices, delivery_calendar, packaging_boxes, yamato_sizes, yamato_rates, orders, order_items, order_packages, order_package_items, order_revisions, order_requests, invoices, invoice_items, invoice_histories, audit_logs, company_info, settings, report_settings, email_notification_config, gmail_oauth_states };

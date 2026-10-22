@@ -2,6 +2,7 @@ import { calculatePackages, computePricing, getDeliveryDates, getShippingFeature
 import { actor, ApiError, assertChanges, atomic, audit, date, fail, insert, insertMany, integer, now, one, rows, settings, string, uid, update, type Row } from './common';
 import type { Context } from 'hono';
 import type { AppEnv } from '../types';
+import { normalizeOrderStatus } from '../../shared/order-status';
 
 export async function findOrder(c: Context<AppEnv>, id: string) {
   const who=actor(c);
@@ -19,17 +20,25 @@ export async function orderDetail(c: Context<AppEnv>, order: Row) {
   const lockActive=order.edit_locked_by && order.edit_lock_expires_at > now() && order.edit_locked_by!==actor(c).id;
   let deadline: string|null=null;
   try { deadline=cancellationDeadline(order.desired_delivery_date,calendar as any,config); } catch { /* Invalid historic settings must not prevent reading the order. */ }
-  let editable=false;
-  try { editable=actor(c).type==='admin' ? !order.is_invoice_locked && order.status!=='cancelled' : canEditOrder(order as any,new Date(),calendar as any,config); }
-  catch { /* Invalid historic settings leave the order readable without permitting edits. */ }
-  return {...order,items,packages,revisions,can_edit:Boolean(editable && !lockActive),edit_deadline:deadline};
+  const status=normalizeOrderStatus(order.status);
+  let unavailableReason:string|null=null;
+  if(status==='shipped')unavailableReason='発送済みの注文は編集・キャンセルできません。';
+  else if(status==='cancelled')unavailableReason='キャンセル済みの注文は編集・キャンセルできません。';
+  else if(status!=='received')unavailableReason='この注文のステータスでは編集・キャンセルできません。';
+  else if(order.is_invoice_locked)unavailableReason='請求書発行済みのため編集・キャンセルできません。';
+  else if(lockActive)unavailableReason='現在、別の利用者が編集中です。';
+  else if(actor(c).type==='customer') {
+    try { if(!canEditOrder(order as any,new Date(),calendar as any,config))unavailableReason='変更・キャンセル期限を過ぎています。'; }
+    catch { unavailableReason='期限設定を確認できないため編集・キャンセルできません。'; }
+  }
+  return {...order,status,items,packages,revisions,can_edit:unavailableReason===null,can_cancel:unavailableReason===null,edit_unavailable_reason:unavailableReason,cancel_unavailable_reason:unavailableReason,edit_deadline:deadline};
 }
 export async function editable(c: Context<AppEnv>, order: Row, requireLock = false) {
+  if (normalizeOrderStatus(order.status)!=='received') fail(409,'ORDER_NOT_EDITABLE','受付済みの注文だけを編集・キャンセルできます。');
   if (order.is_invoice_locked) fail(409,'INVOICE_LOCKED','請求書発行済みのため変更できません。先に請求を取り消してください。');
-  if (order.status==='cancelled') fail(409,'ORDER_NOT_EDITABLE','この注文は変更できません。');
   if (actor(c).type==='customer') {
     const [calendar,config]=await Promise.all([rows(c.env.DB,'SELECT * FROM delivery_calendar WHERE deleted_at IS NULL'),settings(c.env.DB)]);
-    if (!canEditOrder(order as any,new Date(),calendar as any,config)) fail(409,'EDIT_DEADLINE','変更・キャンセル期限を過ぎているか、配送準備が開始されています。');
+    if (!canEditOrder(order as any,new Date(),calendar as any,config)) fail(409,'EDIT_DEADLINE','変更・キャンセル期限を過ぎています。');
   }
   const lockActive=order.edit_locked_by && order.edit_lock_expires_at>now();
   if (lockActive && order.edit_locked_by!==actor(c).id) fail(409,'ORDER_LOCKED','現在別の利用者が編集中です。');
@@ -181,7 +190,7 @@ export async function editOrder(c: Context<AppEnv>, order: Row, input: Row) {
   const q=await quote(c,input,order.company_id,order);
   const before=await orderDetail(c,order), stamp=now();
   const data={...snapshotFields(input,q),updated_at:stamp,version:version+1,edit_lock_status:'unlocked',edit_locked_by:null,edit_locked_at:null,edit_lock_expires_at:null};
-  const statements=[update(c.env.DB,'orders',data,'id=? AND version=? AND is_invoice_locked=0 AND edit_locked_by=? AND edit_lock_expires_at>?',order.id,version,actor(c).id,stamp),assertChanges(c.env.DB,1,actor(c),'ORDER_EDIT','orders',order.id,before,{...order,...data,items:q.items},order.company_id),c.env.DB.prepare('DELETE FROM order_package_items WHERE order_id=?').bind(order.id),c.env.DB.prepare('DELETE FROM order_packages WHERE order_id=?').bind(order.id),c.env.DB.prepare('DELETE FROM order_items WHERE order_id=?').bind(order.id),...itemStatements(c.env.DB,order.id,q),insert(c.env.DB,'order_revisions',{id:uid(),order_id:order.id,revision_no:version,changed_at:stamp,changer_type:actor(c).type,changer_id:actor(c).id,before_json:JSON.stringify(before),after_json:JSON.stringify({...order,...data,items:q.items}),before_total:order.total_amount,after_total:q.total_amount,note:input.note||null})];
+  const statements=[update(c.env.DB,'orders',data,"id=? AND version=? AND status IN ('received','confirmed','preparing') AND is_invoice_locked=0 AND edit_locked_by=? AND edit_lock_expires_at>?",order.id,version,actor(c).id,stamp),assertChanges(c.env.DB,1,actor(c),'ORDER_EDIT','orders',order.id,before,{...order,...data,items:q.items},order.company_id),c.env.DB.prepare('DELETE FROM order_package_items WHERE order_id=?').bind(order.id),c.env.DB.prepare('DELETE FROM order_packages WHERE order_id=?').bind(order.id),c.env.DB.prepare('DELETE FROM order_items WHERE order_id=?').bind(order.id),...itemStatements(c.env.DB,order.id,q),insert(c.env.DB,'order_revisions',{id:uid(),order_id:order.id,revision_no:version,changed_at:stamp,changer_type:actor(c).type,changer_id:actor(c).id,before_json:JSON.stringify(before),after_json:JSON.stringify({...order,...data,items:q.items}),before_total:order.total_amount,after_total:q.total_amount,note:input.note||null})];
   await atomic(c.env.DB,statements);
   return orderDetail(c,await findOrder(c,order.id));
 }
@@ -189,15 +198,15 @@ export async function lockOrder(c: Context<AppEnv>, order: Row) {
   await editable(c,order);
   const config=await settings(c.env.DB);
   const stamp=now(), expires=new Date(Date.now()+Number(config.edit_lock_minutes||10)*60*1000).toISOString();
-  const result=await update(c.env.DB,'orders',{edit_locked_by:actor(c).id,edit_locked_at:stamp,edit_lock_expires_at:expires,edit_lock_status:'locked'},'id=? AND is_invoice_locked=0 AND version=? AND (edit_locked_by IS NULL OR edit_locked_by=? OR edit_lock_expires_at<=?)',order.id,order.version,actor(c).id,stamp).run();
+  const result=await update(c.env.DB,'orders',{edit_locked_by:actor(c).id,edit_locked_at:stamp,edit_lock_expires_at:expires,edit_lock_status:'locked'},"id=? AND status IN ('received','confirmed','preparing') AND is_invoice_locked=0 AND version=? AND (edit_locked_by IS NULL OR edit_locked_by=? OR edit_lock_expires_at<=?)",order.id,order.version,actor(c).id,stamp).run();
   if(!result.meta.changes) fail(409,'ORDER_LOCKED','現在別の利用者が編集中です。');
   return {locked_by:actor(c).id,expires_at:expires,version:order.version};
 }
 export async function cancelOrder(c: Context<AppEnv>, order: Row, input: Row) {
-  if(order.status==='completed') fail(409,'ORDER_NOT_CANCELLABLE','納品完了した注文はキャンセルできません。');
+  if(normalizeOrderStatus(order.status)!=='received') fail(409,'ORDER_NOT_CANCELLABLE','受付済みの注文だけをキャンセルできます。');
   await editable(c,order);
   const version=integer(input.version,'バージョン',1), stamp=now();
   const reason=string(input.reason,'取消理由',actor(c).type==='admin',2000);
-  await atomic(c.env.DB,[update(c.env.DB,'orders',{status:'cancelled',cancelled_at:stamp,updated_at:stamp,version:version+1,edit_lock_status:'unlocked',edit_locked_by:null,edit_locked_at:null,edit_lock_expires_at:null},'id=? AND version=? AND is_invoice_locked=0 AND (edit_locked_by IS NULL OR edit_locked_by=? OR edit_lock_expires_at<=?)',order.id,version,actor(c).id,stamp),assertChanges(c.env.DB,1,actor(c),'ORDER_CANCEL','orders',order.id,order,{status:'cancelled',reason},order.company_id)]);
+  await atomic(c.env.DB,[update(c.env.DB,'orders',{status:'cancelled',cancelled_at:stamp,updated_at:stamp,version:version+1,edit_lock_status:'unlocked',edit_locked_by:null,edit_locked_at:null,edit_lock_expires_at:null},"id=? AND version=? AND status IN ('received','confirmed','preparing') AND is_invoice_locked=0 AND (edit_locked_by IS NULL OR edit_locked_by=? OR edit_lock_expires_at<=?)",order.id,version,actor(c).id,stamp),assertChanges(c.env.DB,1,actor(c),'ORDER_CANCEL','orders',order.id,order,{status:'cancelled',reason},order.company_id)]);
   return orderDetail(c,await findOrder(c,order.id));
 }

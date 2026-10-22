@@ -3,17 +3,20 @@ import type { AppEnv } from '../types';
 import { notifyOrder } from '../notifications';
 import { actor, assertChanges, atomic, audit, body, fail, integer, now, one, paginated, rows, update } from '../services/common';
 import { cancelOrder, createOrder, editOrder, findOrder, lockOrder, orderDetail, quote } from '../services/orders';
+import { normalizeOrderStatus, orderStatusValues } from '../../shared/order-status';
 
 export function orderRoutes(router:Hono<AppEnv>,admin:boolean) {
   router.get('/orders',async c=>{
     const filters=['1=1'],args:any[]=[];
     if(!admin) {filters.push('o.company_id=?');args.push(actor(c).company_id);}
     else if(c.req.query('company_id')) {filters.push('o.company_id=?');args.push(c.req.query('company_id'));}
-    if(c.req.query('status')) {filters.push('o.status=?');args.push(c.req.query('status'));}
+    if(c.req.query('status')) {const values=orderStatusValues(c.req.query('status')!);filters.push(`o.status IN (${values.map(()=>'?').join(',')})`);args.push(...values);}
     if(admin && ['0','1'].includes(c.req.query('is_invoice_locked')||'')) {filters.push('o.is_invoice_locked=?');args.push(Number(c.req.query('is_invoice_locked')));}
     if(c.req.query('q')) {filters.push('(o.id LIKE ? OR co.name LIKE ?)');args.push(`%${c.req.query('q')}%`,`%${c.req.query('q')}%`);}
     for(const [q,op] of [['from','>='],['to','<=']]) if(c.req.query(q)) {filters.push(`o.desired_delivery_date${op}?`);args.push(c.req.query(q));}
-    return paginated(c,'orders o JOIN companies co ON co.id=o.company_id',filters.join(' AND '),args,'o.ordered_at DESC','o.*,co.name AS company_name');
+    const response=await paginated(c,'orders o JOIN companies co ON co.id=o.company_id',filters.join(' AND '),args,'o.ordered_at DESC','o.*,co.name AS company_name');
+    const result=await response.json() as {data:Record<string,any>[];meta:Record<string,any>};
+    return c.json({...result,data:result.data.map(order=>({...order,status:normalizeOrderStatus(order.status)}))});
   });
   router.post('/orders',async c=>{
     const result=await createOrder(c,await body(c));
@@ -56,10 +59,11 @@ export function orderRoutes(router:Hono<AppEnv>,admin:boolean) {
   if(admin) {
     router.post('/orders/:id/status',async c=>{
       const order=await findOrder(c,c.req.param('id')),input=await body(c),version=integer(input.version,'バージョン',1);
-      const next:Record<string,string>={received:'confirmed',confirmed:'preparing',preparing:'shipped',shipped:'completed'};
-      if(input.status!==next[order.status]) fail(409,'INVALID_TRANSITION','ステータスは順番に進めてください。');
+      const previous=normalizeOrderStatus(order.status);
+      if(!['received','shipped'].includes(input.status) || !['received','shipped'].includes(previous) || input.status===previous) fail(409,'INVALID_TRANSITION','受付済みと発送済みの間だけ変更できます。キャンセルは取消操作から行ってください。');
+      if(order.version!==version)fail(409,'VERSION_CONFLICT','別の操作で更新されています。再読み込みしてください。');
       const stamp=now();
-      await atomic(c.env.DB,[update(c.env.DB,'orders',{status:input.status,version:version+1,updated_at:stamp},'id=? AND version=? AND (edit_locked_by IS NULL OR edit_locked_by=? OR edit_lock_expires_at<=?)',order.id,version,actor(c).id,stamp),assertChanges(c.env.DB,1,actor(c),'ORDER_STATUS_CHANGE','orders',order.id,order,{status:input.status},order.company_id)]);
+      await atomic(c.env.DB,[update(c.env.DB,'orders',{status:input.status,version:version+1,updated_at:stamp,edit_lock_status:'unlocked',edit_locked_by:null,edit_locked_at:null,edit_lock_expires_at:null},'id=? AND version=? AND status=? AND (edit_locked_by IS NULL OR edit_locked_by=? OR edit_lock_expires_at<=?)',order.id,version,order.status,actor(c).id,stamp),assertChanges(c.env.DB,1,actor(c),'ORDER_STATUS_CHANGE','orders',order.id,order,{status:input.status},order.company_id)]);
       return c.json({data:await orderDetail(c,await findOrder(c,order.id))});
     });
     router.get('/orders/:id/delivery-note',async c=>{

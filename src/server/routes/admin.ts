@@ -10,6 +10,7 @@ import { deliveryDates } from '../services/orders';
 import { lineRichMenuRoutes } from './line-rich-menu';
 import { lineNotificationDiagnosticRoutes } from './line-notification-diagnostics';
 import { productImagePreviewRoutes } from './product-image-preview';
+import { normalizeOrderStatus } from '../../shared/order-status';
 
 export const adminRoutes=new Hono<AppEnv>();
 adminRoutes.onError(routerError);
@@ -20,10 +21,10 @@ adminRoutes.get('/me',c=>c.json({data:{type:'admin',admin:actor(c)}}));
 adminRoutes.get('/dashboard',async c=>{
   const today=jstDate(new Date()),yesterday=jstDate(new Date(Date.now()-86400000));
   const [counts,recent]=await Promise.all([
-    one(c.env.DB,`SELECT SUM(CASE WHEN date(ordered_at,'+9 hours')=? THEN 1 ELSE 0 END) AS new_orders,SUM(CASE WHEN status='received' THEN 1 ELSE 0 END) AS pending_confirmation,SUM(CASE WHEN desired_delivery_date=? AND status!='cancelled' THEN 1 ELSE 0 END) AS arriving_today,SUM(CASE WHEN status='preparing' THEN 1 ELSE 0 END) AS preparing,SUM(CASE WHEN date(ordered_at,'+9 hours')=? THEN 1 ELSE 0 END) AS yesterday_new_orders FROM orders`,today,today,yesterday),
+    one(c.env.DB,`SELECT SUM(CASE WHEN date(ordered_at,'+9 hours')=? THEN 1 ELSE 0 END) AS new_orders,SUM(CASE WHEN status IN ('received','confirmed','preparing') THEN 1 ELSE 0 END) AS pending_confirmation,SUM(CASE WHEN desired_delivery_date=? AND status!='cancelled' THEN 1 ELSE 0 END) AS arriving_today,SUM(CASE WHEN status IN ('shipped','completed') THEN 1 ELSE 0 END) AS shipped,SUM(CASE WHEN date(ordered_at,'+9 hours')=? THEN 1 ELSE 0 END) AS yesterday_new_orders FROM orders`,today,today,yesterday),
     rows(c.env.DB,'SELECT o.*,c.name AS company_name,(SELECT count(*) FROM order_items i WHERE i.order_id=o.id) AS item_count FROM orders o JOIN companies c ON c.id=o.company_id ORDER BY ordered_at DESC LIMIT 5')
   ]);
-  return c.json({data:{...Object.fromEntries(Object.entries(counts||{}).map(([k,v])=>[k,Number(v||0)])),recent_orders:recent}});
+  return c.json({data:{...Object.fromEntries(Object.entries(counts||{}).map(([k,v])=>[k,Number(v||0)])),recent_orders:recent.map(order=>({...order,status:normalizeOrderStatus(order.status)}))}});
 });
 masterRoutes(adminRoutes);
 orderRoutes(adminRoutes,true);

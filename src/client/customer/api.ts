@@ -37,7 +37,7 @@ export function useResource<T>(path: string | null, envelope = false, scope = ''
 
 export const money = (amount: unknown) => new Intl.NumberFormat('ja-JP', { style: 'currency', currency: 'JPY', maximumFractionDigits: 0 }).format(Number(amount || 0));
 export const formatDate = (value?: string, withTime = false) => value ? new Date(value.length === 10 ? `${value}T12:00:00+09:00` : value).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo', year: 'numeric', month: 'long', day: 'numeric', ...(withTime ? { hour: '2-digit', minute: '2-digit' } : { weekday: 'short' }) }) : '—';
-export const statuses: Record<string, string> = { received: '受付済', confirmed: '確認済', preparing: '配送準備中', shipping: '配送準備中', shipped: '発送済', completed: '完了', cancelled: 'キャンセル済' };
+export const statuses: Record<string, string> = { received: '受付済', confirmed: '受付済', preparing: '受付済', shipping: '受付済', shipped: '発送済', completed: '発送済', cancelled: 'キャンセル済' };
 
 export interface Product {
   id: string; name: string; product_name?: string; category?: string; volume_ml?: number; capacity_ml?: number; unit?: string;
