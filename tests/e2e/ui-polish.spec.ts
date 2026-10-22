@@ -39,7 +39,9 @@ for (const width of [390, 768, 1366]) {
     for (const path of ['/order', '/orders', '/orders/O202610190001', '/products', '/products/samurai-300', '/contact', '/invite', '/error']) {
       await page.goto(path);
       await expect(page.locator('main h1')).toBeVisible();
-      await expect(page.getByRole('navigation', { name: 'メインメニュー', exact: true })).toBeVisible();
+      const navigation = page.getByRole('navigation', { name: 'メインメニュー', exact: true });
+      if (path === '/invite') await expect(navigation).toHaveCount(0);
+      else await expect(navigation).toBeVisible();
       await expect(page.locator('a[href^="/admin"]')).toHaveCount(0);
       await expect(page.getByText(/犬山の地で|時を醸す|犬山の伝統を、ひと瓶に|ご縁を大切に、一献を丁寧に/)).toHaveCount(0);
       await expectNoPageOverflow(page);

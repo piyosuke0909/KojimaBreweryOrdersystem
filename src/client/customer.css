@@ -324,3 +324,11 @@
   .ko-history-card { padding: 20px 18px 16px; }
 }
 @media (prefers-reduced-motion: reduce) { .ko-customer *, .ko-customer *::before, .ko-customer *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; scroll-behavior: auto !important; } }
+
+/* The invitation stays in LINE before asking for a staff name. */
+.ko-onboarding-panel > svg { color: var(--ko-navy); margin-bottom: 16px; }
+.ko-onboarding-panel > h2 { font-size: 18px; margin-bottom: 12px; }
+.ko-onboarding-panel > p { font-size: 13px; line-height: 1.9; margin-bottom: 18px; overflow-wrap: anywhere; }
+.ko-onboarding-panel > .ko-button + .ko-button { margin-top: 12px; }
+.ko-onboarding-panel form { margin-top: 20px; }
+.ko-onboarding-panel .ko-loading { min-height: 140px; }

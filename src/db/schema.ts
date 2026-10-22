@@ -94,6 +94,18 @@ export const invitations = sqliteTable('invitations', {
   index('invitations_company_id_status_idx').on(t.company_id, t.status),
 ]);
 
+export const line_invitation_handoffs = sqliteTable('line_invitation_handoffs', {
+  subject_hash: text('subject_hash').primaryKey(),
+  handoff_id: text('handoff_id').notNull().unique(),
+  invitation_id: text('invitation_id').notNull().references(() => invitations.id),
+  created_at: text('created_at').notNull(),
+  expires_at: text('expires_at').notNull(),
+}, (t) => [
+  check('line_invitation_handoffs_subject_hash_check', sql`length(subject_hash) = 64`),
+  check('line_invitation_handoffs_expiry_check', sql`expires_at > created_at`),
+  index('line_invitation_handoffs_expires_idx').on(t.expires_at),
+]);
+
 export const line_users = sqliteTable('line_users', {
   id: text('id').primaryKey(),
   company_id: text('company_id').notNull().references(() => companies.id),

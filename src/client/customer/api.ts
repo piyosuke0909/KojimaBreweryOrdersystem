@@ -53,6 +53,13 @@ export interface Quote {
   delivery_method?: 'own_delivery' | 'yamato';
   snap_shipping_method?: string; snap_carrier_name?: string;
 }
+export interface InvitationHandoff {
+  pending: boolean;
+  handoff_id?: string | null;
+  company_id?: string;
+  company_name?: string;
+  already_registered?: boolean;
+}
 export const productName = (product: Product | any) => product.name || product.product_name || '商品';
 export const addressName = (address?: Address | null) => address?.name || address?.address_name || address?.recipient_name || '配送先';
 export const addressText = (address?: Address | null) => address ? [address.prefecture, address.city, address.address_line1, address.address_line2].filter(Boolean).join('') || address.address || '' : '';

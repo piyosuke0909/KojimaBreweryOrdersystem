@@ -4,12 +4,13 @@ import { Link, NavLink, Navigate, Route, Routes, useLocation, useNavigate, usePa
 import liff from '@line/liff';
 import { AlertCircle, ArrowLeft, ArrowRight, CalendarDays, Check, CheckCircle2, ChevronRight, ClipboardList, Clock, LoaderCircle, Mail, MapPin, MessageCircle, Minus, Package, Phone, Plus, RefreshCw, Search, ShieldCheck, ShoppingBag, Truck, Wine, X } from 'lucide-react';
 import { addressName, addressText, api, ApiError, formatDate, money, productName, statuses, useResource } from './api';
-import type { Address, Product, Quote } from './api';
+import type { Address, InvitationHandoff, Product, Quote } from './api';
 import { resolveProductImageUrl } from '../../shared/product-image';
 import DeliveryDateCalendar from './DeliveryDateCalendar';
+import { claimAutomaticLineLogin, clearAutomaticLineLogin, hasLineAuthenticationResult, requiresLineAuthentication, withoutLineAuthenticationErrors } from './line-onboarding';
 import '../customer.css';
 
-interface Config { liff_id?: string; environment: string; demo_enabled: boolean; }
+interface Config { liff_id?: string; line_official_account_id?: string; environment: string; demo_enabled: boolean; }
 interface CustomerAuth { actor: any; config: Config | null; loading: boolean; lineReady: boolean; lineAuthenticated: boolean; lineProfile: any; error: string | null; refresh: () => Promise<void>; demo: () => Promise<void>; login: () => void; }
 const AuthContext = createContext<CustomerAuth>(null!);
 const useAuth = () => useContext(AuthContext);
@@ -22,16 +23,28 @@ function lineCredentials(): { id_token: string } | { access_token: string } | nu
 const lineCredentialError = 'LINEの認証情報を取得できませんでした。招待URLを開き直すか、LINEの認証をやり直してください。';
 
 function AuthProvider({ children }: { children: ReactNode }) {
+  const location = useLocation();
   const [actor, setActor] = useState<any>(null);
   const [config, setConfig] = useState<Config | null>(null);
   const [loading, setLoading] = useState(true);
+  const [redirecting, setRedirecting] = useState(false);
   const [lineReady, setLineReady] = useState(false);
   const [lineAuthenticated, setLineAuthenticated] = useState(false);
   const [lineProfile, setLineProfile] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
+  const redirectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const refresh = useCallback(async () => {
     try { const result = await api('/api/auth/me'); setActor(result?.actor || null); }
     catch (err) { if (!(err instanceof ApiError && err.status === 401)) setError((err as Error).message); setActor(null); }
+  }, []);
+  const startLogin = useCallback((force: boolean) => {
+    setActor(null); setLineAuthenticated(false); setLineProfile(null); setError(null); setRedirecting(true);
+    try {
+      if (force && liff.isLoggedIn()) liff.logout();
+      liff.login({ redirectUri: window.location.href });
+      if (redirectTimer.current) clearTimeout(redirectTimer.current);
+      redirectTimer.current = setTimeout(() => { setRedirecting(false); setError('LINEへ移動できませんでした。もう一度、認証をやり直してください。'); }, 6000);
+    } catch { setRedirecting(false); setError('LINEの認証を開始できませんでした。招待URLを開き直すか、もう一度お試しください。'); }
   }, []);
   useEffect(() => {
     let active = true;
@@ -43,7 +56,9 @@ function AuthProvider({ children }: { children: ReactNode }) {
         if (settings.liff_id) {
           // A cookie from another LINE account must not determine this account's company.
           setActor(null); setLineAuthenticated(false); setLineProfile(null); setError(null);
-          await liff.init({ liffId: settings.liff_id });
+          const automaticEntry = requiresLineAuthentication(window.location.href);
+          const automatic = automaticEntry && !hasLineAuthenticationResult(window.location.href) && claimAutomaticLineLogin();
+          await liff.init({ liffId: settings.liff_id, withLoginOnExternalBrowser: automatic });
           if (!active) return;
           setLineReady(true);
           if (liff.isLoggedIn()) {
@@ -59,24 +74,37 @@ function AuthProvider({ children }: { children: ReactNode }) {
               if (err instanceof ApiError && err.code === 'LINE_USER_NOT_REGISTERED') setLineAuthenticated(true);
               else throw err;
             }
+            clearAutomaticLineLogin();
             // A display-name lookup is optional; it cannot block verified authentication.
             void Promise.resolve().then(() => liff.getProfile()).then(profile => { if (active) setLineProfile(profile); }).catch(() => {});
+          } else if (automaticEntry) {
+            // The real SDK normally redirects inside init. This also covers clients
+            // where init finishes before its external-browser redirect starts.
+            if (automatic) startLogin(false);
+            else setError('LINEの認証が完了していません。もう一度、認証をやり直してください。');
           }
         } else await refresh();
       } catch (err) { if (active) setError((err as Error).message); }
       finally { if (active) setLoading(false); }
     })();
-    return () => { active = false; };
-  }, [refresh]);
+    return () => { active = false; if (redirectTimer.current) clearTimeout(redirectTimer.current); };
+  }, [refresh, startLogin]);
+  useEffect(() => {
+    if (loading || redirecting || !lineReady || lineAuthenticated || error || !requiresLineAuthentication(window.location.href)) return;
+    if (claimAutomaticLineLogin()) startLogin(false);
+    else setError('LINEの認証が完了していません。もう一度、認証をやり直してください。');
+  }, [location.pathname, location.search, loading, redirecting, lineReady, lineAuthenticated, error, startLogin]);
   const demo = async () => { setLoading(true); setError(null); try { await api('/api/auth/demo/customer', { method: 'POST', body: '{}' }); await refresh(); } catch (err) { setError((err as Error).message); } finally { setLoading(false); } };
   const login = () => {
-    if (!lineReady) return;
-    const redirectUri = window.location.href;
-    setActor(null); setLineAuthenticated(false); setLineProfile(null); setError(null);
-    try { if (liff.isLoggedIn()) liff.logout(); liff.login({ redirectUri }); }
-    catch { setError('LINEの認証を開始できませんでした。招待URLを開き直してください。'); }
+    clearAutomaticLineLogin();
+    // The SDK rejects a denial callback before it is ready. Remove only its error
+    // fields after a user requests retry; retain the invitation and LIFF deep link.
+    const retryUrl = withoutLineAuthenticationErrors(window.location.href);
+    if (retryUrl !== window.location.href) window.history.replaceState(window.history.state, '', retryUrl);
+    if (!lineReady) { window.location.reload(); return; }
+    claimAutomaticLineLogin(); startLogin(true);
   };
-  return <AuthContext.Provider value={{ actor, config, loading, lineReady, lineAuthenticated, lineProfile, error, refresh, demo, login }}>{children}</AuthContext.Provider>;
+  return <AuthContext.Provider value={{ actor, config, loading: loading || redirecting, lineReady, lineAuthenticated, lineProfile, error, refresh, demo, login }}>{children}</AuthContext.Provider>;
 }
 
 export default function CustomerApp() {
@@ -86,10 +114,11 @@ export default function CustomerApp() {
 function CustomerShell() {
   const { config } = useAuth();
   const location = useLocation();
+  const onboarding = location.pathname.startsWith('/invite');
   useEffect(() => { window.scrollTo({ top: 0 }); }, [location.pathname]);
   return <div className="ko-customer">
     {config?.demo_enabled && <div className="ko-dev-banner">開発・検証環境 — 実際の発注・通知は行いません</div>}
-    <header className="ko-header"><Link className="ko-brand" to="/order"><span><strong>小島醸造</strong><small>法人向け注文サービス</small></span></Link></header>
+    <header className="ko-header">{onboarding ? <span className="ko-brand"><span><strong>小島醸造</strong><small>法人向け注文サービス</small></span></span> : <Link className="ko-brand" to="/order"><span><strong>小島醸造</strong><small>法人向け注文サービス</small></span></Link>}</header>
     <main className="ko-main"><Routes>
       <Route path="/" element={<CustomerHome />} />
       <Route path="/order/*" element={<Protected><OrderFlow /></Protected>} />
@@ -99,11 +128,12 @@ function CustomerShell() {
       <Route path="/products" element={<ProductList />} />
       <Route path="/products/:id" element={<ProductDetail />} />
       <Route path="/contact" element={<Contact />} />
+      <Route path="/invite/resume" element={<PendingRegistration />} />
       <Route path="/invite/*" element={<Invite />} />
       <Route path="/error" element={<Unavailable title="ご利用状況をご確認ください" message="招待状の有効期限や登録状態をご確認のうえ、小島醸造までお問い合わせください。" />} />
       <Route path="*" element={<Unavailable title="ページが見つかりません" message="下のメニューからご希望のページをお選びください。" />} />
     </Routes></main>
-    <nav className="ko-nav" aria-label="メインメニュー">{[{ path: '/order', icon: ShoppingBag, label: '注文' }, { path: '/orders', icon: ClipboardList, label: '注文履歴' }, { path: '/products', icon: Wine, label: '商品紹介' }, { path: '/contact', icon: MessageCircle, label: 'お問い合わせ' }].map(({ path, icon: Icon, label }) => <NavLink key={path} to={path} className={({ isActive }) => `ko-nav-item${isActive && (path !== '/order' || !location.pathname.startsWith('/orders')) ? ' active' : ''}`}><Icon size={21} strokeWidth={1.65} /><span>{label}</span></NavLink>)}</nav>
+    {!onboarding && <nav className="ko-nav" aria-label="メインメニュー">{[{ path: '/order', icon: ShoppingBag, label: '注文' }, { path: '/orders', icon: ClipboardList, label: '注文履歴' }, { path: '/products', icon: Wine, label: '商品紹介' }, { path: '/contact', icon: MessageCircle, label: 'お問い合わせ' }].map(({ path, icon: Icon, label }) => <NavLink key={path} to={path} className={({ isActive }) => `ko-nav-item${isActive && (path !== '/order' || !location.pathname.startsWith('/orders')) ? ' active' : ''}`}><Icon size={21} strokeWidth={1.65} /><span>{label}</span></NavLink>)}</nav>}
     <footer className="ko-desktop-footer">© 小島醸造</footer>
   </div>;
 }
@@ -116,16 +146,17 @@ function CustomerHome() {
 }
 
 function Protected({ children }: { children: ReactNode }) {
-  const { actor, loading } = useAuth();
-  if (loading) return <Loading label="ご利用状況を確認しています" />;
-  if (actor?.type !== 'customer') return <LoginGate />;
+  const { actor, loading, lineAuthenticated } = useAuth();
+  if (loading) return <Loading label="LINEの本人確認を進めています" />;
+  if (actor?.type !== 'customer') return lineAuthenticated ? <Navigate to="/invite/resume" replace /> : <LoginGate />;
   return <>{children}</>;
 }
 
 function LoginGate() {
   const { config, lineReady, lineAuthenticated, login, demo, loading, error } = useAuth();
+  if (config?.liff_id && !lineAuthenticated && !error && !config.demo_enabled) return <Loading label="LINEの本人確認へ進んでいます" />;
   return <div className="ko-login"><h1>ご注文</h1><p>ご登録済みのLINEアカウントでログインしてください。</p>
-    <div className="ko-panel ko-login-panel"><ShieldCheck size={26} /><h2>{lineAuthenticated ? 'お取引先への登録が必要です' : 'LINEログイン'}</h2><p>{lineAuthenticated ? 'LINEの本人確認は完了しています。企業との紐づけには、お取引先へお渡しした招待QRコードから初回登録をお願いします。友だち追加のQRコードとは異なります。' : 'ご登録済みのLINEアカウントでログインすると、お取引先専用の価格でご注文いただけます。'}</p>{lineReady && !lineAuthenticated && <button className="ko-button ko-line-button" onClick={login}>{error ? 'LINEの認証をやり直す' : 'LINEでログイン'} <ArrowRight size={18} /></button>}{!config?.liff_id && <p className="ko-muted">LINE連携の設定が完了していません。ご利用開始については小島醸造にお問い合わせください。</p>}{error && <InlineError message={error} />}<Link className="ko-text-link" to="/contact">登録・ご利用についてのお問い合わせ <ChevronRight size={15} /></Link></div>
+    <div className="ko-panel ko-login-panel"><ShieldCheck size={26} /><h2>{lineAuthenticated ? 'お取引先への登録が必要です' : 'LINEログイン'}</h2><p>{lineAuthenticated ? 'LINEの本人確認は完了しています。企業との紐づけには、お取引先へお渡しした招待QRコードから初回登録をお願いします。友だち追加のQRコードとは異なります。' : 'ご登録済みのLINEアカウントでログインすると、お取引先専用の価格でご注文いただけます。'}</p>{config?.liff_id && !lineAuthenticated && error && <button className="ko-button ko-line-button" onClick={login}>LINEの認証をやり直す <ArrowRight size={18} /></button>}{!config?.liff_id && <p className="ko-muted">LINE連携の設定が完了していません。ご利用開始については小島醸造にお問い合わせください。</p>}{error && <InlineError message={error} />}<Link className="ko-text-link" to="/contact">登録・ご利用についてのお問い合わせ <ChevronRight size={15} /></Link></div>
     {config?.demo_enabled && <div className="ko-demo-box"><strong>開発環境で動作を確認</strong><p>テスト用の取引先で商品選択・注文を試せます。本番環境では表示されません。</p><button className="ko-button secondary" onClick={() => void demo()} disabled={loading}>テスト用取引先としてログイン</button></div>}
   </div>;
 }
@@ -332,7 +363,158 @@ function Contact() {
   return <><Heading title="お問い合わせ" eyebrow="CONTACT US" /><p className="ko-page-description">ご注文や商品について、<br />どうぞお気軽にお問い合わせください。</p>{loading ? <Loading /> : error ? <InlineError message={error.message} retry={reload} /> : <><div className="ko-contact-card"><Phone size={26} strokeWidth={1.4} /><h2>お電話でのお問い合わせ</h2>{phone ? <><a className="ko-phone-number" href={`tel:${phone}`}>{phone}</a><a className="ko-button" href={`tel:${phone}`}><Phone size={18} />電話をかける</a></> : <p className="ko-muted">電話番号は現在準備中です。</p>}<p className="ko-contact-hours"><Clock size={15} />{data?.hours || data?.business_hours || data?.contact_hours || '受付時間はお問い合わせください'}</p></div><div className="ko-contact-card"><Mail size={26} strokeWidth={1.4} /><h2>メールでのお問い合わせ</h2>{email ? <><a href={`mailto:${email}`} className="ko-email">{email}</a><a className="ko-button secondary" href={`mailto:${email}`}>メールを作成する <ArrowRight size={17} /></a></> : <p className="ko-muted">メールアドレスは現在準備中です。</p>}</div>{(data?.note || data?.contact_note || data?.message) && <div className="ko-notice"><MessageCircle size={18} /><p className="ko-preline">{data.note || data.contact_note || data.message}</p></div>}</>}</>;
 }
 
+function useInvitationHandoff(mode: 'prepare' | 'resume', token: string | null, enabled: boolean) {
+  const { actor, lineAuthenticated } = useAuth();
+  const scope = JSON.stringify([actor?.id ?? null, actor?.company_id ?? null, lineAuthenticated]);
+  const [value, setValue] = useState<InvitationHandoff | null>(null);
+  const [error, setError] = useState<Error | null>(null);
+  const [loading, setLoading] = useState(enabled);
+  const [version, setVersion] = useState(0);
+  const reload = () => setVersion(current => current + 1);
+  useEffect(() => {
+    if (!enabled) { setValue(null); setError(null); setLoading(false); return; }
+    let active = true;
+    setValue(null); setError(null); setLoading(true);
+    (async () => {
+      try {
+        const credentials = lineCredentials();
+        if (!credentials) throw new Error(lineCredentialError);
+        const result = await api<InvitationHandoff>(`/api/public/invitations/${mode}`, { method: 'POST', body: JSON.stringify({ ...(mode === 'prepare' ? { token } : {}), ...credentials }) });
+        if (active) setValue(result);
+      } catch (error) { if (active) setError(error as Error); }
+      finally { if (active) setLoading(false); }
+    })();
+    return () => { active = false; };
+  }, [mode, token, enabled, scope, version]);
+  return { value, error, loading, reload };
+}
+
+type FriendshipStatus = 'checking' | 'friend' | 'not-friend' | 'error';
+function useFriendship(enabled: boolean) {
+  const { config } = useAuth();
+  const [status, setStatus] = useState<FriendshipStatus>('checking');
+  const account = config?.line_official_account_id || '@060ucble';
+  const officialAccount = /^@[A-Za-z0-9._-]+$/.test(account) ? account : '@060ucble';
+  const sequence = useRef(0);
+  const check = useCallback(async () => {
+    if (!enabled) return;
+    const request = ++sequence.current;
+    setStatus('checking');
+    try {
+      const result = await liff.getFriendship({ officialAccountId: officialAccount });
+      if (request !== sequence.current) return;
+      if (result.friendFlag === true) setStatus('friend');
+      else if (result.friendFlag === false) setStatus('not-friend');
+      else setStatus('error');
+    } catch { if (request === sequence.current) setStatus('error'); }
+  }, [enabled, officialAccount]);
+  useEffect(() => {
+    void check();
+    const visible = () => { if (!document.hidden) void check(); };
+    const focused = () => { void check(); };
+    document.addEventListener('visibilitychange', visible);
+    window.addEventListener('focus', focused);
+    return () => { ++sequence.current; document.removeEventListener('visibilitychange', visible); window.removeEventListener('focus', focused); };
+  }, [check]);
+  return { status, check, officialAccount };
+}
+
+function FriendChatStep({ invitation, status, check, officialAccount }: { invitation: InvitationHandoff; status: FriendshipStatus; check: () => Promise<void>; officialAccount: string }) {
+  const profile = `https://line.me/R/ti/p/${encodeURIComponent(officialAccount)}`;
+  const chat = `https://line.me/R/oaMessage/${encodeURIComponent(officialAccount)}/`;
+  return <>
+    <Heading title="LINEのトークから登録を続けます" />
+    <div className="ko-invitation-brand"><h2>{invitation.company_name || 'お取引先'} 様</h2></div>
+    <section className="ko-panel ko-onboarding-panel">
+      <MessageCircle size={30} aria-hidden="true" />
+      {invitation.already_registered && <p className="ko-notice">このLINEアカウントは登録済みです。トークからそのままご注文いただけます。</p>}
+      {status === 'checking' ? <Loading label="友だち追加の状態を確認しています" /> : status === 'friend' ? <>
+        <h2>友だち追加を確認しました</h2>
+        <p>トーク画面のリッチメニューで「注文」を押してください。{!invitation.already_registered && '担当者名を入力すると、ご注文いただけます。'}</p>
+        <a className="ko-button ko-line-button" href={chat} target="_blank" rel="noopener noreferrer">小島醸造のトークを開く <ArrowRight size={18} /></a>
+      </> : <>
+        <h2>小島醸造を友だち追加</h2>
+        <p>小島醸造のLINEを友だちに追加してください。ブロック中の場合は、ブロックを解除してください。</p>
+        {status === 'error' && <InlineError message="友だち追加の状態を確認できませんでした。LINEで追加後、もう一度確認してください。" />}
+        <a className="ko-button ko-line-button" href={profile} target="_blank" rel="noopener noreferrer">小島醸造を友だち追加 <Plus size={18} /></a>
+        <button type="button" className="ko-button secondary" onClick={() => void check()}>追加状態を確認 <RefreshCw size={17} /></button>
+        <p className="ko-footnote">LINEの確認画面で、友だち追加の操作をお願いします。追加後はトーク画面の「注文」から登録を続けられます。</p>
+      </>}
+    </section>
+  </>;
+}
+
+function HandoffError({ error, reload }: { error: Error; reload: () => void }) {
+  return <><Heading title="招待状をご確認ください" /><InlineError message={error.message} retry={reload} /><p className="ko-muted">招待が無効になった場合や登録上限に達した場合は、小島醸造へお問い合わせください。</p><Link to="/contact" className="ko-button secondary">お問い合わせ <ChevronRight size={18} /></Link></>;
+}
+
 function Invite() {
+  const { config } = useAuth();
+  // Keep explicit local demo login available without connecting to the real LINE account.
+  return config?.demo_enabled && !config.liff_id ? <LegacyInvite /> : <InviteHandoff />;
+}
+
+function InviteHandoff() {
+  const [search] = useSearchParams();
+  const token = search.get('t');
+  const { loading: authLoading, lineReady, lineAuthenticated } = useAuth();
+  const ready = !authLoading && lineReady && lineAuthenticated && !!token;
+  const handoff = useInvitationHandoff('prepare', token, ready);
+  const friendship = useFriendship(ready && !!handoff.value);
+  if (authLoading) return <Loading label="LINEの本人確認へ進んでいます" />;
+  if (!token) return <Unavailable title="招待QRコードからご登録ください" message="お取引先へお渡しした招待QRコードを読み取ると、登録を開始できます。" />;
+  if (!lineAuthenticated) return <LoginGate />;
+  if (handoff.loading || !handoff.value && !handoff.error) return <Loading label="招待内容を確認しています" />;
+  if (handoff.error) return <HandoffError error={handoff.error} reload={handoff.reload} />;
+  return <FriendChatStep invitation={handoff.value!} {...friendship} />;
+}
+
+function PendingRegistration() {
+  const { actor, config, loading: authLoading, lineReady, lineAuthenticated, lineProfile, refresh, login } = useAuth();
+  const navigate = useNavigate();
+  const ready = !authLoading && lineReady && lineAuthenticated && actor?.type !== 'customer';
+  const handoff = useInvitationHandoff('resume', null, ready);
+  const friendship = useFriendship(ready && !!handoff.value?.pending);
+  const [staffName, setStaffName] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const existingSession = useRef(false);
+  useEffect(() => { if (lineProfile?.displayName) setStaffName(current => current || lineProfile.displayName); }, [lineProfile]);
+  useEffect(() => {
+    if (!handoff.value?.already_registered || existingSession.current) return;
+    existingSession.current = true; setBusy(true);
+    (async () => {
+      try {
+        const credentials = lineCredentials(); if (!credentials) throw new Error(lineCredentialError);
+        await api('/api/auth/line', { method: 'POST', body: JSON.stringify(credentials) });
+        await refresh(); navigate('/order', { replace: true });
+      } catch (error) { setError((error as Error).message); }
+      finally { setBusy(false); }
+    })();
+  }, [handoff.value, refresh, navigate]);
+  const register = async () => {
+    if (busy || !staffName.trim() || !handoff.value?.handoff_id || friendship.status !== 'friend') return;
+    setBusy(true); setError(null);
+    try {
+      const credentials = lineCredentials(); if (!credentials) throw new Error(lineCredentialError);
+      await api('/api/public/invitations/register-pending', { method: 'POST', body: JSON.stringify({ handoff_id: handoff.value.handoff_id, staff_name: staffName.trim(), ...credentials }) });
+      await refresh(); navigate('/order', { replace: true, state: { notice: 'ご担当者の登録が完了しました。ご注文いただけます。' } });
+    } catch (error) { setError((error as Error).message); }
+    finally { setBusy(false); }
+  };
+  if (authLoading || busy && handoff.value?.already_registered) return <Loading label="ご利用状況を確認しています" />;
+  if (actor?.type === 'customer') return <Navigate to="/order" replace />;
+  if (!lineAuthenticated) return <LoginGate />;
+  if (!config?.liff_id || !lineReady) return <Unavailable title="LINEからご登録ください" message="お取引先へお渡しした招待QRコードを読み取ってください。" />;
+  if (handoff.loading || !handoff.value && !handoff.error) return <Loading label="招待内容を確認しています" />;
+  if (handoff.error) return <HandoffError error={handoff.error} reload={handoff.reload} />;
+  if (error && handoff.value?.already_registered) return <><Heading title="LINEの認証をご確認ください" /><InlineError message={error} /><button className="ko-button ko-line-button" onClick={login}>LINEの認証をやり直す</button></>;
+  if (!handoff.value?.pending || !handoff.value.handoff_id) return <Unavailable title="招待QRコードからご登録ください" message="企業への登録には、お取引先へお渡しした招待QRコードが必要です。QRを読み取ってLINEのトークからお進みください。" />;
+  if (friendship.status !== 'friend') return <FriendChatStep invitation={handoff.value} {...friendship} />;
+  return <><Heading title="お取引先のご登録" /><div className="ko-invitation-brand"><h2>{handoff.value.company_name} 様</h2></div><section className="ko-panel ko-onboarding-panel"><h2>注文ご担当者の登録</h2><p>ご担当者名を入力すると、{handoff.value.company_name}のご注文画面へ進みます。</p><form onSubmit={event => { event.preventDefault(); void register(); }}><label htmlFor="staff-name" className="ko-label">ご担当者名 <em>必須</em></label><input id="staff-name" required autoComplete="name" value={staffName} onChange={event => setStaffName(event.target.value)} maxLength={100} placeholder="山田 太郎" /><p className="ko-footnote">{lineProfile?.displayName ? 'LINE表示名を初期表示しています。ご担当者の氏名に変更してください。' : 'ご担当者の氏名を入力してください。'}</p>{error && <InlineError message={error} />}<button className="ko-button" type="submit" disabled={busy || !staffName.trim()}>{busy ? <LoaderCircle className="ko-spin" size={19} /> : <>登録して注文へ進む <ArrowRight size={18} /></>}</button></form></section></>;
+}
+
+function LegacyInvite() {
   const [search] = useSearchParams(); const token = search.get('t'); const { actor, lineReady, lineAuthenticated, lineProfile, config, login, refresh, error: authError, loading: authLoading } = useAuth(); const navigate = useNavigate();
   const identityScope = JSON.stringify([actor?.type ?? null, actor?.id ?? null, actor?.company_id ?? null, lineAuthenticated]);
   const { data: invitation, loading, error, reload } = useResource<any>(!authLoading && token ? `/api/public/invitations/lookup?t=${encodeURIComponent(token)}` : null, false, identityScope);

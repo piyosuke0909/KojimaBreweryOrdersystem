@@ -12,6 +12,7 @@ import { ApiError } from './services/common';
 import { registerInvitation } from './services/invitations';
 import { notifyWelcome } from './notifications';
 import { recordLineWebhookIdentityChecks } from './services/line-webhook-identity';
+import { prepareInvitationHandoff, registerPendingInvitation, resumeInvitationHandoff } from './services/line-invitation-handoff';
 
 export const app = new Hono<AppEnv>();
 app.use('/api/*',async(c,next)=>{
@@ -32,8 +33,25 @@ app.get('/api/health',async c=>{
   await c.env.DB.prepare('SELECT 1').first();
   return c.json({data:{status:'ok',database:'ok',environment:c.env.APP_ENV??'production'}});
 });
-app.get('/api/config',c=>c.json({data:{liff_id:c.env.LIFF_ID??'',environment:c.env.APP_ENV??'production',demo_enabled:demoEnabled(c.env,c.req.url)}}));
+app.get('/api/config',c=>c.json({data:{liff_id:c.env.LIFF_ID??'',line_official_account_id:'@060ucble',environment:c.env.APP_ENV??'production',demo_enabled:demoEnabled(c.env,c.req.url)}}));
 app.route('/api/auth',authRoutes);
+for(const operation of ['prepare','resume','register-pending'] as const)app.post(`/api/public/invitations/${operation}`,async c=>{
+  let verifiedSubject:string|undefined;
+  try {
+    const schema=operation==='prepare' ? lineCredentialsSchema.extend({token:z.string().min(1).max(256)})
+      : operation==='register-pending' ? lineCredentialsSchema.extend({handoff_id:z.string().uuid(),staff_name:z.string().trim().min(1).max(100)}) : lineCredentialsSchema;
+    const body=schema.parse(await c.req.json());
+    const line=await verifyLineCredentials(body,c.env);
+    verifiedSubject=line.sub;
+    if(operation==='prepare')return c.json({data:await prepareInvitationHandoff(c.env,line,(body as any).token)});
+    if(operation==='resume')return c.json({data:await resumeInvitationHandoff(c.env,line)});
+    const link=await registerPendingInvitation(c.env,line,(body as any).handoff_id,(body as any).staff_name);
+    const actor=await resolveActor(c.env,{sub:line.sub,type:'customer'});
+    if(!actor)throw new HTTPException(403,{message:'利用者登録を確認できませんでした。'});
+    c.executionCtx.waitUntil(notifyWelcome(c.env,line.sub,link.staff_name));
+    return await attachSession(c,actor!);
+  } catch(error) {await clearCustomerSession(c,verifiedSubject);throw error;}
+});
 app.post('/api/public/invitations/register',async c=>{
   let verifiedSubject:string|undefined;
   try {
