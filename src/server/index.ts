@@ -17,6 +17,8 @@ import { emailRoutes } from './routes/email';
 import { adminNotificationRoutes } from './routes/admin-notifications';
 import { lineMessagesRoutes } from './routes/line-messages';
 import { receiveLineMessages } from './services/line-messages';
+import { billingDocumentRoutes } from './routes/billing-documents';
+import { adminAccountRoutes } from './routes/admin-account';
 
 export const app = new Hono<AppEnv>();
 app.use('/api/*',async(c,next)=>{
@@ -82,7 +84,9 @@ app.use('/api/admin/*',requireActor('admin'));
 app.use('/api/admin',requireActor('admin'));
 app.route('/api/admin/mail-settings',emailRoutes);
 app.route('/api/admin/notifications',adminNotificationRoutes);
+app.route('/api/admin/account',adminAccountRoutes);
 app.route('/api/admin',lineMessagesRoutes);
+app.route('/api/admin',billingDocumentRoutes);
 app.route('/api/admin',adminRoutes);
 app.use('/api/customer/*',requireActor('customer'));
 app.use('/api/customer',requireActor('customer'));

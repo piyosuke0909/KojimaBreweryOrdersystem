@@ -17,13 +17,15 @@ function sessionSecret(env: Bindings) {
   return env.SESSION_SECRET!;
 }
 async function key(secret: string, usage: KeyUsage[]) { return crypto.subtle.importKey('raw', encoder.encode(secret), {name:'HMAC',hash:'SHA-256'}, false, usage); }
-export async function signSession(actor: Actor, env: Bindings) {
+type SessionActor = Actor & { session_version?: number };
+type SessionPayload = { sub:string; type:'admin'|'customer'; session_version?:number };
+export async function signSession(actor: SessionActor, env: Bindings) {
   const header = b64(encoder.encode(JSON.stringify({alg:'HS256',typ:'JWT'})));
-  const body = b64(encoder.encode(JSON.stringify({sub:actor.id,type:actor.type,iat:Math.floor(Date.now()/1000),exp:Math.floor(Date.now()/1000)+TOKEN_SECONDS})));
+  const body = b64(encoder.encode(JSON.stringify({sub:actor.id,type:actor.type,...(actor.type==='admin'?{session_version:actor.session_version??0}:{}),iat:Math.floor(Date.now()/1000),exp:Math.floor(Date.now()/1000)+TOKEN_SECONDS})));
   const data = `${header}.${body}`;
   return `${data}.${b64(new Uint8Array(await crypto.subtle.sign('HMAC', await key(sessionSecret(env),['sign']), encoder.encode(data))))}`;
 }
-export async function verifySession(token: string, env: Bindings): Promise<{sub:string,type:'admin'|'customer'} | null> {
+export async function verifySession(token: string, env: Bindings): Promise<SessionPayload | null> {
   try {
     const parts=token.split('.'); if(parts.length!==3)return null;
     const header=JSON.parse(new TextDecoder().decode(unb64(parts[0])));
@@ -31,6 +33,7 @@ export async function verifySession(token: string, env: Bindings): Promise<{sub:
     if(!await crypto.subtle.verify('HMAC', await key(sessionSecret(env),['verify']), unb64(parts[2]), encoder.encode(`${parts[0]}.${parts[1]}`)))return null;
     const p=JSON.parse(new TextDecoder().decode(unb64(parts[1]))), now=Math.floor(Date.now()/1000);
     if(!Number.isFinite(p.exp)||!Number.isFinite(p.iat)||p.exp<=now||p.iat>now+30||p.exp-p.iat>TOKEN_SECONDS||typeof p.sub!=='string'||!['admin','customer'].includes(p.type))return null;
+    if(p.type==='admin'&&p.session_version!==undefined&&(!Number.isSafeInteger(p.session_version)||p.session_version<0))return null;
     return p;
   } catch { return null; }
 }
@@ -101,10 +104,10 @@ export async function clearCustomerSession(c:any,verifiedSubject?:string) {
   if(verifiedSubject&&session?.type==='customer'&&session.sub===verifiedSubject)return;
   deleteCookie(c,COOKIE,{path:'/',httpOnly:true,secure:new URL(c.req.url).protocol==='https:',sameSite:'Strict'});
 }
-export async function resolveActor(env:Bindings,payload:{sub:string,type:'admin'|'customer'}):Promise<Actor|null> {
+export async function resolveActor(env:Bindings,payload:SessionPayload):Promise<SessionActor|null> {
   if(payload.type==='admin'){
-    const row=await env.DB.prepare("SELECT id,name,role FROM admins WHERE id=? AND status='active'").bind(payload.sub).first<{id:string,name:string,role:string}>();
-    return row?{...row,type:'admin'}:null;
+    const row=await env.DB.prepare("SELECT id,name,role,session_version FROM admins WHERE id=? AND status='active'").bind(payload.sub).first<{id:string,name:string,role:string,session_version:number}>();
+    return row&&(payload.session_version??0)===Number(row.session_version??0)?{...row,type:'admin'}:null;
   }
   const row=await env.DB.prepare("SELECT l.line_user_id id,l.company_id,l.staff_name,c.name company_name FROM line_users l JOIN companies c ON c.id=l.company_id WHERE l.line_user_id=? AND l.status='active' AND c.status='active' AND c.deleted_at IS NULL").bind(payload.sub).first<{id:string,company_id:string,staff_name:string,company_name:string}>();
   return row?{...row,type:'customer',name:row.staff_name}:null;
@@ -123,7 +126,7 @@ export const requireActor = (type?:'admin'|'customer') => createMiddleware<AppEn
 export function demoEnabled(env:Bindings,url:string) {
   return env.APP_ENV==='development'&&env.ALLOW_DEMO_AUTH==='true'&&['localhost','127.0.0.1','[::1]'].includes(new URL(url).hostname);
 }
-export async function attachSession(c:any, actor:Actor) {
+export async function attachSession(c:any, actor:SessionActor) {
   setCookie(c,COOKIE,await signSession(actor,c.env),{path:'/',httpOnly:true,secure:new URL(c.req.url).protocol==='https:',sameSite:'Strict',maxAge:TOKEN_SECONDS});
   c.header('Cache-Control','no-store');return c.json({data:{actor}});
 }
@@ -153,7 +156,7 @@ authRoutes.post('/admin/login',async c=>{
   const valid=await checkPassword(password,admin?.password_hash??await hashPassword(crypto.randomUUID()));
   if(!admin||admin.status!=='active'||!valid)fail(401,'ログインIDまたはパスワードが違います。');
   attempts.delete(ip);
-  return attachSession(c,{id:admin.id,type:'admin',name:admin.name,role:admin.role});
+  return attachSession(c,{id:admin.id,type:'admin',name:admin.name,role:admin.role,session_version:Number(admin.session_version??0)});
 });
 authRoutes.post('/line',async c=>{
   try {
@@ -167,7 +170,7 @@ authRoutes.get('/me',requireActor(), c=>c.json({data:{actor:c.get('actor')}}));
 authRoutes.post('/logout',c=>{deleteCookie(c,COOKIE,{path:'/'});return c.json({data:{logged_out:true}});});
 authRoutes.post('/demo/admin',async c=>{
   if(!demoEnabled(c.env,c.req.url))fail(403,'デモログインは開発環境専用です。');
-  let row=await c.env.DB.prepare("SELECT id,name,role FROM admins WHERE login_id='demo-admin' AND status='active'").first<any>();
+  let row=await c.env.DB.prepare("SELECT id,name,role,session_version FROM admins WHERE login_id='demo-admin' AND status='active'").first<any>();
   if(!row){
     await c.env.DB.prepare("INSERT OR IGNORE INTO admins(id,login_id,password_hash,name,role,status) VALUES('demo-admin','demo-admin',?,'デモ管理者','owner','active')").bind(await hashPassword(crypto.randomUUID())).run();
     row={id:'demo-admin',name:'デモ管理者',role:'owner'};

@@ -1,0 +1,10 @@
+.admin-root .company-unread-name{display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-width:0}
+.admin-root .company-unread-name .admin-company-link{min-width:0;max-width:100%}
+.admin-root .company-unread-name .admin-company-link strong{overflow-wrap:anywhere;white-space:normal}
+.admin-root .company-unread-badge{display:inline-flex;align-items:center;justify-content:center;min-width:44px;min-height:44px;padding:7px 12px;border:1px solid #b91c1c;border-radius:22px;background:#c9252c;color:#fff;font-size:12px;font-weight:700;line-height:1.4;white-space:nowrap;flex-shrink:0}
+.admin-root .company-unread-badge:hover{background:#a91c25;border-color:#8f1520;color:#fff}
+.admin-root .company-unread-badge.is-busy{opacity:.65;cursor:wait}
+.admin-root .company-unread-summary{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin:10px 0 0;font-size:12px;color:#69768a}
+.admin-root .company-unread-load-error{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:0 22px;margin:10px 0;color:#a13239;font-size:12px}
+.admin-root .company-unread-detail-error .company-unread-load-error{padding:0}
+@media(max-width:680px){.admin-root .company-unread-name{align-items:flex-start}.admin-root .company-unread-name .admin-company-link{flex:1;min-width:130px}.admin-root .company-unread-load-error{padding:0 14px}}

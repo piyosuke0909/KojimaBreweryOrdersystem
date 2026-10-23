@@ -1,0 +1,15 @@
+.admin-root .billing-delivery-actions .admin-action-stack{min-width:0}
+.admin-root .billing-delivery-actions .admin-field,.admin-root .billing-delivery-actions .admin-select{min-width:0;max-width:100%;width:100%}
+.admin-root .billing-delivery-actions .admin-select{font-size:12px}
+.admin-root .billing-delivery-actions .admin-btn{min-height:44px;white-space:normal;text-align:center}
+.admin-root .billing-delivery-actions .admin-muted,.admin-root .billing-delivery-actions .admin-alert{overflow-wrap:anywhere}
+.admin-root .billing-delivery-history-body{padding:0 18px 20px;min-width:0}
+.admin-root .billing-delivery-history-body>p{font-size:12px;margin:0 0 13px}
+.admin-root .billing-delivery-history-table{width:100%;border-collapse:collapse;table-layout:fixed;font-size:12px}
+.admin-root .billing-delivery-history-table th,.admin-root .billing-delivery-history-table td{border:1px solid #cdd7e3;padding:9px 7px;text-align:left;overflow-wrap:anywhere;vertical-align:top}
+.admin-root .billing-delivery-history-table th{background:#eef2f7;font-size:11px}
+.admin-root .billing-delivery-history-table td{background:#fff}
+.admin-root .billing-delivery-history-table td strong,.admin-root .billing-delivery-history-table td span,.admin-root .billing-delivery-history-table td time{display:block}
+.admin-root .billing-delivery-history-table .admin-btn{padding:7px;min-height:44px;font-size:11px;white-space:normal;flex-wrap:wrap}
+.admin-root .billing-invoice-history .admin-table-detail{min-height:44px;white-space:nowrap}
+@media(max-width:1100px){.admin-root .billing-delivery-history-table,.admin-root .billing-delivery-history-table tbody,.admin-root .billing-delivery-history-table tr,.admin-root .billing-delivery-history-table td{display:block;width:100%}.admin-root .billing-delivery-history-table thead{display:none}.admin-root .billing-delivery-history-table tr{border:1px solid #b8c7d8;margin-bottom:12px;border-radius:6px;overflow:hidden}.admin-root .billing-delivery-history-table td{border:0;border-bottom:1px solid #d8e1eb}.admin-root .billing-delivery-history-table td:last-child{border-bottom:0}.admin-root .billing-delivery-history-table td span{margin-top:4px}.admin-root .billing-delivery-history-table .admin-btn{width:100%}}

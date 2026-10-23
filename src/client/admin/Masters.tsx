@@ -5,6 +5,7 @@ import { FieldHelp, navigableRowProps } from './ui';
 import { isGoogleDriveUrl, parseGoogleDriveImage, resolveProductImageUrl } from '../../shared/product-image';
 import RichMenu from './RichMenu';
 import EmailSettings from './EmailSettings';
+import AccountSettings from './AccountSettings';
 import './masters.css';
 
 type Row = Record<string, any>;
@@ -524,9 +525,9 @@ function Audit() {
 
 export default function Masters({ section, userRole }: { section: string; userRole?: string }) {
   const [shippingTab, setShippingTab] = useState('calendar');
-  const [settingsTab, setSettingsTab] = useState<SettingsTab | 'line-rich-menu' | 'email'>(() => {
+  const [settingsTab, setSettingsTab] = useState<SettingsTab | 'line-rich-menu' | 'email' | 'account'>(() => {
     const tab = new URLSearchParams(window.location.search).get('tab');
-    return tab === 'line-rich-menu' || tab === 'email' ? tab : 'company-info';
+    return tab === 'line-rich-menu' || tab === 'email' || tab === 'account' ? tab : 'company-info';
   });
   const [settings, setSettings] = useState<Row | null>(null), [settingsError, setSettingsError] = useState('');
   useEffect(() => {
@@ -543,7 +544,7 @@ export default function Masters({ section, userRole }: { section: string; userRo
   return <div className={`master-page ${section === 'shipping' ? 'master-page-shipping' : ''}`}><div className="admin-page-head"><div><p className="master-eyebrow">KOJIMA BREWERY / {section.toUpperCase()}</p><h1>{title}</h1><p className="admin-muted">{subtitle}</p></div>{section === 'products' ? <span className="master-heading-icon"><Wine size={25} /></span> : section === 'shipping' ? <span className="master-heading-icon"><Truck size={25} /></span> : null}</div>
     {section === 'products' && <Resource config={productConfig} />}
     {section === 'shipping' && <><Notice error={settingsError} /><div className="admin-tabs master-tabs" role="tablist" aria-label="配送管理メニュー">{shippingTabs.map(([key, label]) => <button key={key} role="tab" aria-selected={currentShippingTab === key} className={`admin-tab ${currentShippingTab === key ? 'active' : ''}`} onClick={() => setShippingTab(key)}>{key === 'calendar' && <CalendarDays size={16} />}{label}</button>)}</div>{currentShippingTab === 'calendar' ? <DeliveryCalendar /> : <Resource key={currentShippingTab} config={shippingConfigs[currentShippingTab]} />}</>}
-    {section === 'settings' && <><div className="admin-tabs master-tabs" role="tablist" aria-label="設定メニュー">{([['company-info', '会社情報・振込口座'], ['settings', '税・注文・通知'], ['shipping-features', '配送・梱包機能'], ['report-settings', '帳票設定'], ['email', 'メール'], ['line-rich-menu', 'LINEリッチメニュー']] as const).map(([key, label]) => <button key={key} role="tab" aria-selected={settingsTab === key} className={`admin-tab ${settingsTab === key ? 'active' : ''}`} onClick={() => setSettingsTab(key)}>{label}</button>)}</div>{settingsTab === 'email' ? <EmailSettings owner={userRole === 'owner'} /> : settingsTab === 'line-rich-menu' ? <RichMenu owner={userRole === 'owner'} /> : <SettingsForm key={settingsTab} type={settingsTab} onSettingsSaved={setSettings} />}</>}
+    {section === 'settings' && <><div className="admin-tabs master-tabs" role="tablist" aria-label="設定メニュー">{([['company-info', '会社情報・振込口座'], ['settings', '税・注文・通知'], ['shipping-features', '配送・梱包機能'], ['report-settings', '帳票設定'], ['account', 'ログイン設定'], ['email', 'メール'], ['line-rich-menu', 'LINEリッチメニュー']] as const).map(([key, label]) => <button key={key} role="tab" aria-selected={settingsTab === key} className={`admin-tab ${settingsTab === key ? 'active' : ''}`} onClick={() => setSettingsTab(key)}>{label}</button>)}</div>{settingsTab === 'account' ? <AccountSettings /> : settingsTab === 'email' ? <EmailSettings owner={userRole === 'owner'} /> : settingsTab === 'line-rich-menu' ? <RichMenu owner={userRole === 'owner'} /> : <SettingsForm key={settingsTab} type={settingsTab} onSettingsSaved={setSettings} />}</>}
     {section === 'audit' && <Audit />}
   </div>;
 }

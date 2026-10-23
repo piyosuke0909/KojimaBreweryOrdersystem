@@ -58,6 +58,58 @@ async function lineEvent(key='line-a',company='a',member='member-a'){
 }
 
 describe('administrator notification API and transaction integration',()=>{
+  it('requires an administrator for company unread counts',async()=>{
+    const path='/api/admin/notifications/companies?company_ids=a,b';
+    expect((await request(path,undefined,null)).status).toBe(401);
+    expect((await request(path,undefined,customer)).status).toBe(403);
+  });
+  it('counts all unread events for each requested company beyond the latest five, without creating receipts',async()=>{
+    for(let index=0;index<7;index++)await orderEvent(index);
+    await lineEvent('company-a-first');await lineEvent('company-a-second','a','member-a2');await lineEvent('company-b','b','member-b');
+    const response=await request('/api/admin/notifications/companies?company_ids=b,a');
+    expect(response.status).toBe(200);
+    const [b,a]=response.value.data.items;
+    expect(b).toMatchObject({company_id:'b',total_unread:1,counts:{orders:0,line_messages:1},latest_orders:null,latest_line_message:{company_id:'b',line_user_id:'member-b'}});
+    expect(a).toMatchObject({company_id:'a',total_unread:9,counts:{orders:7,line_messages:2},latest_orders:{order_id:'O-NOTICE-6'},latest_line_message:{line_user_id:'member-a2'},latest:{line_user_id:'member-a2',is_read:false}});
+    expect(a.latest.href).toBe('/admin/companies/a?tab=line-messages&line_user_id=member-a2');
+    expect(a.latest_orders.href).toBe('/admin/orders/O-NOTICE-6');
+    await request('/api/admin/notifications/companies?company_ids=a,b');
+    expect(db.sqlite.prepare('SELECT COUNT(*) count FROM admin_notification_reads').get()).toMatchObject({count:0});
+    for(const privateValue of ['NOTICE_LINE_A','NOTICE_LINE_B','event_key','company-a-second'])expect(JSON.stringify(response.value)).not.toContain(privateValue);
+  });
+  it('keeps company counts and latest unread destinations separate for each administrator',async()=>{
+    await orderEvent();await lineEvent('unread-a');await lineEvent('unread-b','b','member-b');
+    const line=(await notices()).value.data.items.find((item:any)=>item.company_id==='a'&&item.kind==='line_message');
+    expect((await request(`/api/admin/notifications/${line.id}/read`,{})).status).toBe(200);
+    const path='/api/admin/notifications/companies?company_ids=a,b';
+    const current=(await request(path)).value.data.items;
+    const independent=(await request(path,undefined,other)).value.data.items;
+    expect(current[0]).toMatchObject({company_id:'a',total_unread:1,counts:{orders:1,line_messages:0},latest:{kind:'order_created'},latest_line_message:null});
+    expect(independent[0]).toMatchObject({company_id:'a',total_unread:2,counts:{orders:1,line_messages:1},latest:{kind:'line_message'}});
+    expect(current[1].total_unread).toBe(1);expect(independent[1].total_unread).toBe(1);
+  });
+  it('returns explicit zero counts for visible companies, omits deleted or unrequested companies and deduplicates requested IDs',async()=>{
+    await lineEvent('hidden-b','b','member-b');
+    const zero=(await request('/api/admin/notifications/companies?company_ids=a,a,unknown')).value.data.items;
+    expect(zero).toEqual([{company_id:'a',total_unread:0,counts:{orders:0,line_messages:0},latest:null,latest_orders:null,latest_line_message:null}]);
+    db.sqlite.exec("UPDATE companies SET deleted_at='2026-10-23T00:00:00.000Z' WHERE id='b'");
+    expect((await request('/api/admin/notifications/companies?company_ids=b')).value.data.items).toEqual([]);
+  });
+  it('chooses the last inserted unread event across categories when timestamps match',async()=>{
+    const current=order();const created_at='2026-10-23T00:00:00.000Z';
+    await lineMessageNotificationStatement(env.DB,{event_key:'same-company-line',company_id:'a',line_user_id:'member-a',company_name:'A商店',created_at}).run();
+    await adminNotificationStatement(env.DB,{event_key:'same-company-order',kind:'order_created',company_id:'a',order_id:current.id,title:'同時刻の注文',created_at}).run();
+    const row=(await request('/api/admin/notifications/companies?company_ids=a')).value.data.items[0];
+    expect(row.latest.kind).toBe('order_created');expect(row.latest_orders.kind).toBe('order_created');expect(row.latest_line_message.kind).toBe('line_message');
+  });
+  it('bounds and parameterizes requested company IDs and treats absent or empty lists as empty',async()=>{
+    for(const path of ['/api/admin/notifications/companies','/api/admin/notifications/companies?company_ids='])expect((await request(path)).value.data).toEqual({items:[]});
+    for(const ids of [Array.from({length:101},()=> 'a').join(','),'a,,b','a'.repeat(129)])expect((await request('/api/admin/notifications/companies?company_ids='+encodeURIComponent(ids))).status).toBe(400);
+    await lineEvent();await lineEvent('safe-b','b','member-b');
+    const injection="a') OR 1=1 --";
+    expect((await request('/api/admin/notifications/companies?company_ids='+encodeURIComponent(injection))).value.data.items).toEqual([]);
+    expect((await request('/api/admin/notifications/companies?company_ids=b')).value.data.items).toHaveLength(1);
+  });
   it('requires an administrator and does not expose notifications to customers',async()=>{
     expect((await request('/api/admin/notifications',undefined,null)).status).toBe(401);
     expect((await request('/api/admin/notifications',undefined,customer)).status).toBe(403);

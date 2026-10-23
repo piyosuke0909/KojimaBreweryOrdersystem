@@ -1,4 +1,5 @@
 import { fail, now, one, rows, uid, type Row } from './common';
+import { z } from 'zod';
 
 type Kind='order_created'|'order_updated'|'order_cancelled'|'line_message';
 type Event={event_key:string;kind:Kind;company_id:string;order_id?:string|null;line_user_id?:string|null;title:string;created_at?:string};
@@ -42,6 +43,39 @@ export async function listAdminNotifications(db:D1Database,adminId:string){
       FROM admin_notifications n WHERE NOT EXISTS(SELECT 1 FROM admin_notification_reads r WHERE r.notification_id=n.id AND r.admin_id=?)`,adminId),
   ]);
   return {items:events.map(publicEvent),total_unread:Number(counts?.total_unread||0),counts:{orders:Number(counts?.orders||0),companies:Number(counts?.companies||0)}};
+}
+
+/** Return unread summaries only for the company rows currently displayed. */
+export async function listCompanyUnreadNotifications(db:D1Database,adminId:string,companyIdsValue?:string){
+  if(companyIdsValue===undefined||companyIdsValue==='')return {items:[]};
+  const companyIds=[...new Set(z.array(z.string().min(1).max(128)).max(100).parse(companyIdsValue.split(',')))];
+  const selected=await rows(db,`WITH company_unread AS (
+    SELECT c.id AS scoped_company_id,n.*,n.rowid AS event_sequence,
+      COUNT(n.id) OVER(PARTITION BY c.id) AS unread_total,
+      SUM(CASE WHEN n.category='orders' THEN 1 ELSE 0 END) OVER(PARTITION BY c.id) AS unread_orders,
+      SUM(CASE WHEN n.category='companies' THEN 1 ELSE 0 END) OVER(PARTITION BY c.id) AS unread_line_messages,
+      ROW_NUMBER() OVER(PARTITION BY c.id,n.category ORDER BY n.created_at DESC,n.rowid DESC) AS category_rank
+    FROM companies c LEFT JOIN admin_notifications n ON n.company_id=c.id
+      AND NOT EXISTS(SELECT 1 FROM admin_notification_reads r WHERE r.notification_id=n.id AND r.admin_id=?)
+    WHERE c.deleted_at IS NULL AND c.id IN(SELECT value FROM json_each(?))
+  ) SELECT * FROM company_unread WHERE category_rank=1
+    ORDER BY scoped_company_id,created_at DESC,event_sequence DESC`,adminId,JSON.stringify(companyIds));
+  type Summary={company_id:string;total_unread:number;counts:{orders:number;line_messages:number};latest:ReturnType<typeof publicEvent>|null;latest_orders:ReturnType<typeof publicEvent>|null;latest_line_message:ReturnType<typeof publicEvent>|null};
+  const summaries=new Map<string,Summary>();
+  for(const row of selected){
+    let summary=summaries.get(row.scoped_company_id);
+    if(!summary){
+      summary={company_id:row.scoped_company_id,total_unread:Number(row.unread_total),counts:{orders:Number(row.unread_orders),line_messages:Number(row.unread_line_messages)},latest:null,latest_orders:null,latest_line_message:null};
+      summaries.set(row.scoped_company_id,summary);
+    }
+    if(row.id){
+      const event=publicEvent(row);
+      summary.latest??=event;
+      if(row.category==='orders')summary.latest_orders=event;
+      else summary.latest_line_message=event;
+    }
+  }
+  return {items:companyIds.flatMap(id=>summaries.has(id)?[summaries.get(id)!]:[])};
 }
 
 export async function readAdminNotification(db:D1Database,adminId:string,id:string){

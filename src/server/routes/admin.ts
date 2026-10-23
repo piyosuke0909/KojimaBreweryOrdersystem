@@ -4,7 +4,7 @@ import { jstDate } from '../../domain';
 import { actor, assertChanges, atomic, audit, body, date, fail, insert, integer, now, one, paginated, routerError, rows, settings, string, uid, update, type Row } from '../services/common';
 import { masterRoutes, saveMaster, softDeleteMaster } from '../services/masters';
 import { invitationTokenKey, issueInvitation, publicInvitation, restoreInvitationQr, savedInvitationQr } from '../services/invitations';
-import { cancelInvoice, findInvoice, invoiceDetail, issueInvoice } from '../services/invoices';
+import { cancelInvoice, findInvoice, invoiceDetail, issueInvoice, publicInvoiceHistory } from '../services/invoices';
 import { orderRoutes } from './orders';
 import { deliveryDates } from '../services/orders';
 import { lineRichMenuRoutes } from './line-rich-menu';
@@ -164,11 +164,11 @@ adminRoutes.post('/invoices/:id/pay',async c=>{
   await atomic(c.env.DB,[update(c.env.DB,'invoices',{status:'paid'},"id=? AND status='issued' AND latest_version=?",invoice.id,invoice.latest_version),assertChanges(c.env.DB,1,actor(c),'INVOICE_PAID','invoices',invoice.id,invoice,{status:'paid'},invoice.company_id)]);
   return c.json({data:await invoiceDetail(c,await findInvoice(c,invoice.id))});
 });
-adminRoutes.get('/invoices/:id/history',async c=>{await findInvoice(c,c.req.param('id'));return c.json({data:await rows(c.env.DB,'SELECT * FROM invoice_histories WHERE invoice_id=? ORDER BY version DESC,acted_at DESC',c.req.param('id'))});});
+adminRoutes.get('/invoices/:id/history',async c=>{await findInvoice(c,c.req.param('id'));return c.json({data:(await rows(c.env.DB,'SELECT * FROM invoice_histories WHERE invoice_id=? ORDER BY version DESC,acted_at DESC',c.req.param('id'))).map(publicInvoiceHistory)});});
 adminRoutes.get('/invoices/:id/history/:historyId',async c=>{
   const history=await one(c.env.DB,'SELECT * FROM invoice_histories WHERE id=? AND invoice_id=?',c.req.param('historyId'),c.req.param('id'));
   if(!history) fail(404,'NOT_FOUND','発行履歴が見つかりません。');
-  return c.json({data:{...history,snapshot:JSON.parse(history!.snapshot_json)}});
+  return c.json({data:{...publicInvoiceHistory(history!),snapshot:JSON.parse(history!.snapshot_json)}});
 });
 
 adminRoutes.get('/audit',async c=>{

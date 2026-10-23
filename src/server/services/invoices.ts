@@ -8,10 +8,16 @@ export async function findInvoice(c:Context<AppEnv>,id:string) {
   if(!invoice) fail(404,'NOT_FOUND','請求書が見つかりません。');
   return invoice!;
 }
+/** Request digests and retry identifiers are internal persistence metadata. */
+export function publicInvoiceHistory(row:Row) {
+  const {request_id: _requestId, request_hash: _requestHash, ...safe} = row;
+  return safe;
+}
 export async function invoiceDetail(c:Context<AppEnv>,invoice:Row) {
-  const [items,history]=await Promise.all([rows(c.env.DB,'SELECT ii.*,o.snap_recipient_name,o.desired_delivery_date,o.status AS order_status FROM invoice_items ii JOIN orders o ON o.id=ii.order_id WHERE ii.invoice_id=? ORDER BY line_no',invoice.id),rows(c.env.DB,'SELECT * FROM invoice_histories WHERE invoice_id=? ORDER BY version DESC,acted_at DESC',invoice.id)]);
+  const [items,storedHistory]=await Promise.all([rows(c.env.DB,'SELECT ii.*,o.snap_recipient_name,o.desired_delivery_date,o.status AS order_status FROM invoice_items ii JOIN orders o ON o.id=ii.order_id WHERE ii.invoice_id=? ORDER BY line_no',invoice.id),rows(c.env.DB,`SELECT h.*,CASE WHEN h.action_type='cancel' THEN a.name ELSE COALESCE(json_extract(h.snapshot_json,'$.issued_by'),a.name) END AS acted_by_name FROM invoice_histories h LEFT JOIN admins a ON a.id=h.acted_by WHERE h.invoice_id=? ORDER BY h.version DESC,h.acted_at DESC,h.rowid DESC`,invoice.id)]);
+  const history=storedHistory.map(publicInvoiceHistory);
   const latest=history.find(h=>h.action_type!=='cancel');
-  return {...invoice,items,history,histories:history,snapshot:latest?JSON.parse(latest.snapshot_json):null};
+  return {...invoice,items,history,histories:history,snapshot:latest?JSON.parse(latest.snapshot_json):null,can_edit_presentation:['issued','paid'].includes(invoice.status)};
 }
 export async function issueInvoice(c:Context<AppEnv>,input:Row,previous?:Row) {
   if(previous && previous.status!=='cancelled') fail(409,'INVOICE_NOT_CANCELLED','再発行するには先に請求を取り消してください。');

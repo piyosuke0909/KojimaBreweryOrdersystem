@@ -8,11 +8,13 @@ export const admins = sqliteTable('admins', {
   password_hash: text('password_hash').notNull(),
   name: text('name').notNull(),
   role: text('role').notNull().default('staff'),
+  session_version: integer('session_version').notNull().default(0),
   status: text('status').notNull().default('active'),
   created_at: text('created_at').notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (t) => [
   check('admins_check_1', sql`role IN ('owner','staff')`),
   check('admins_check_2', sql`status IN ('active','inactive')`),
+  check('admins_session_version', sql`${t.session_version}>=0`),
 ]);
 
 export const companies = sqliteTable('companies', {
@@ -467,11 +469,36 @@ export const invoice_histories = sqliteTable('invoice_histories', {
   cancelled_by: text('cancelled_by').references(() => admins.id),
   cancel_reason: text('cancel_reason'),
   note: text('note'),
+  request_id: text('request_id'),
+  request_hash: text('request_hash'),
 }, (t) => [
   check('invoice_histories_check_1', sql`version > 0`),
   check('invoice_histories_check_2', sql`action_type IN ('issue','cancel','reissue')`),
   check('invoice_histories_check_3', sql`json_valid(snapshot_json)`),
   uniqueIndex('invoice_histories_invoice_id_version_action_type_uniq').on(t.invoice_id, t.version, t.action_type),
+  uniqueIndex('invoice_histories_request_id_uniq').on(t.request_id).where(sql`${t.request_id} IS NOT NULL`),
+]);
+
+export const delivery_note_histories = sqliteTable('delivery_note_histories', {
+  id: text('id').primaryKey().notNull(),
+  order_id: text('order_id').notNull().references(() => orders.id),
+  invoice_id: text('invoice_id').references(() => invoices.id),
+  version: integer('version').notNull(),
+  request_id: text('request_id').notNull().unique(),
+  request_hash: text('request_hash').notNull(),
+  snapshot_json: text('snapshot_json').notNull(),
+  issued_at: text('issued_at').notNull(),
+  issued_by: text('issued_by').notNull().references(() => admins.id),
+  source_order_version: integer('source_order_version').notNull(),
+  source_invoice_version: integer('source_invoice_version'),
+}, (t) => [
+  check('delivery_note_histories_version', sql`${t.version}>0`),
+  check('delivery_note_histories_snapshot', sql`json_valid(${t.snapshot_json})`),
+  check('delivery_note_histories_order_version', sql`${t.source_order_version}>0`),
+  check('delivery_note_histories_invoice_version', sql`${t.source_invoice_version} IS NULL OR ${t.source_invoice_version}>0`),
+  check('delivery_note_histories_invoice_source', sql`(${t.invoice_id} IS NULL AND ${t.source_invoice_version} IS NULL) OR (${t.invoice_id} IS NOT NULL AND ${t.source_invoice_version} IS NOT NULL)`),
+  uniqueIndex('delivery_note_histories_order_version_uniq').on(t.order_id,t.version),
+  index('delivery_note_histories_invoice_idx').on(t.invoice_id,sql`${t.issued_at} DESC`),
 ]);
 
 export const audit_logs = sqliteTable('audit_logs', {
@@ -642,4 +669,4 @@ export const line_message_unsends = sqliteTable('line_message_unsends', {
   created_at: text('created_at').notNull(),
 },(t)=>[primaryKey({columns:[t.line_message_id,t.line_user_id]})]);
 
-export const schema = { admins, companies, shipping_rules, shipping_addresses, invitations, line_users, contracts, products, company_product_prices, delivery_calendar, packaging_boxes, yamato_sizes, yamato_rates, orders, order_items, order_packages, order_package_items, order_revisions, order_requests, invoices, invoice_items, invoice_histories, audit_logs, company_info, settings, report_settings, email_notification_config, gmail_oauth_states, admin_notifications, admin_notification_reads, line_messages, line_message_unsends };
+export const schema = { admins, companies, shipping_rules, shipping_addresses, invitations, line_users, contracts, products, company_product_prices, delivery_calendar, packaging_boxes, yamato_sizes, yamato_rates, orders, order_items, order_packages, order_package_items, order_revisions, order_requests, invoices, invoice_items, invoice_histories, delivery_note_histories, audit_logs, company_info, settings, report_settings, email_notification_config, gmail_oauth_states, admin_notifications, admin_notification_reads, line_messages, line_message_unsends };

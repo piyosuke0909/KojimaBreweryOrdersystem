@@ -12,6 +12,7 @@ import {
 } from './ui';
 import './invitations.css';
 import CompanyLineMessages from './CompanyLineMessages';
+import { CompanyUnreadBadge, CompanyUnreadLoadError, useCompanyUnreadNotifications } from './CompanyUnreadNotifications';
 
 type Row = Record<string, any>;
 type Field = {
@@ -104,6 +105,7 @@ function CompanyList() {
   const [editor, setEditor] = useState<Row | null>(null);
   const [deleting, setDeleting] = useState<Row | null>(null);
   const [refresh, setRefresh] = useState(0);
+  const unread = useCompanyUnreadNotifications(rows.map(company => company.id));
 
   useEffect(() => {
     let active = true;
@@ -141,11 +143,12 @@ function CompanyList() {
         <button className="admin-btn primary"><Search size={17} />検索</button><span className="admin-filter-count">{total} 件の取引先</span>
       </form>
       <ErrorBox error={deleting ? '' : error} />
+      <CompanyUnreadLoadError error={unread.error} refresh={unread.refresh} />
       {busy ? <Loading /> : <>
         <div className="admin-table-wrap"><table className="admin-table">
           <thead><tr><th>会社名・屋号</th><th>担当者</th><th>電話番号</th><th>所在地</th><th>LINE登録</th><th>配送先</th><th>状態</th><th>操作</th></tr></thead>
           <tbody>{rows.map(company => <tr key={company.id} {...rowNavigation(`/admin/companies/${company.id}`, `${company.name}の詳細`)}>
-            <td><Link className="admin-company-link" to={`/admin/companies/${company.id}`}><span className="admin-company-avatar"><Building2 size={19} /></span><strong>{company.name}</strong></Link></td>
+            <td><div className="company-unread-name"><Link className="admin-company-link" to={`/admin/companies/${company.id}`}><span className="admin-company-avatar"><Building2 size={19} /></span><strong>{company.name}</strong></Link><CompanyUnreadBadge summary={unread.entries[company.id]} companyName={company.name} /></div></td>
             <td>{company.contact_name || '—'}</td><td>{company.phone || '—'}</td><td>{company.address || '—'}</td>
             <td>{company.line_user_count ?? company.line_users_count ?? 0} 名</td><td>{company.address_count ?? company.shipping_address_count ?? 0} 件</td><td><Badge value={company.status} /></td>
             <td><div className="admin-inline-actions"><Link className="admin-table-detail" to={`/admin/companies/${company.id}`}>詳細</Link><button className="admin-table-detail" aria-label={`${company.name}を編集`} onClick={() => setEditor(company)}>編集</button><button className="admin-text-danger" aria-label={`${company.name}を削除`} onClick={() => { setError(''); setDeleting(company); }}>削除</button></div></td>
@@ -187,6 +190,7 @@ function CompanyDetail({ id }: { id: string }) {
   const [qrLoading, setQrLoading] = useState<string | null>(null);
   const [qrError, setQrError] = useState('');
   const [qrNotice, setQrNotice] = useState('');
+  const unread = useCompanyUnreadNotifications([id]);
 
   useEffect(() => { if (new URLSearchParams(location.search).get('tab') === 'line-messages') setTab('line-messages'); }, [location.search]);
   function chooseTab(value: string) {
@@ -297,9 +301,10 @@ function CompanyDetail({ id }: { id: string }) {
   return <>
     <Link className="admin-back-link" to="/admin/companies"><ArrowLeft size={16} />取引先一覧へ戻る</Link>
     <div className="admin-page-head">
-      <div><span className="admin-eyebrow">BUSINESS PARTNER DETAIL</span><h1>{company.name}</h1><p>{company.contact_name ? `担当窓口：${company.contact_name}` : '取引先の詳細情報'}</p></div>
+      <div><span className="admin-eyebrow">BUSINESS PARTNER DETAIL</span><div className="company-unread-name"><h1>{company.name}</h1><CompanyUnreadBadge summary={unread.entries[id]} companyName={company.name} /></div><p>{company.contact_name ? `担当窓口：${company.contact_name}` : '取引先の詳細情報'}</p>{!!unread.entries[id]?.total_unread && <div className="company-unread-summary"><span>未読の内容を確認</span><CompanyUnreadBadge summary={unread.entries[id]} companyName={company.name} category="line_messages" /><CompanyUnreadBadge summary={unread.entries[id]} companyName={company.name} category="orders" /></div>}</div>
       <div className="admin-inline-actions"><Badge value={company.status} /><button className="admin-btn secondary" onClick={() => beginEdit('company', company)}><Pencil size={16} />取引先を編集</button><button className="admin-btn secondary" onClick={() => beginDelete('company', company)}><Trash2 size={16} />取引先を削除</button></div>
     </div>
+    <div className="company-unread-detail-error"><CompanyUnreadLoadError error={unread.error} refresh={unread.refresh} /></div>
     <div className="admin-tabs">{tabs.map(([key, label, Icon]) => <button key={key} className={`admin-tab ${tab === key ? 'active' : ''}`} onClick={() => chooseTab(key)}><Icon size={17} />{label}</button>)}</div>
     <ErrorBox error={confirm ? '' : error} />
     {success && <div className="admin-alert success" role="status"><CircleCheck size={18} />{success}</div>}
