@@ -5,6 +5,7 @@ import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
 import type { Actor, AppEnv, Bindings } from './types';
 import { ApiError } from './services/common';
+import { getSystemGeneration } from './system-state';
 
 const encoder = new TextEncoder();
 const COOKIE = 'kojima_session';
@@ -18,10 +19,10 @@ function sessionSecret(env: Bindings) {
 }
 async function key(secret: string, usage: KeyUsage[]) { return crypto.subtle.importKey('raw', encoder.encode(secret), {name:'HMAC',hash:'SHA-256'}, false, usage); }
 type SessionActor = Actor & { session_version?: number };
-type SessionPayload = { sub:string; type:'admin'|'customer'; session_version?:number };
+type SessionPayload = { sub:string; type:'admin'|'customer'; session_version?:number; reset_generation?:number };
 export async function signSession(actor: SessionActor, env: Bindings) {
   const header = b64(encoder.encode(JSON.stringify({alg:'HS256',typ:'JWT'})));
-  const body = b64(encoder.encode(JSON.stringify({sub:actor.id,type:actor.type,...(actor.type==='admin'?{session_version:actor.session_version??0}:{}),iat:Math.floor(Date.now()/1000),exp:Math.floor(Date.now()/1000)+TOKEN_SECONDS})));
+  const body = b64(encoder.encode(JSON.stringify({sub:actor.id,type:actor.type,reset_generation:await getSystemGeneration(env),...(actor.type==='admin'?{session_version:actor.session_version??0}:{}),iat:Math.floor(Date.now()/1000),exp:Math.floor(Date.now()/1000)+TOKEN_SECONDS})));
   const data = `${header}.${body}`;
   return `${data}.${b64(new Uint8Array(await crypto.subtle.sign('HMAC', await key(sessionSecret(env),['sign']), encoder.encode(data))))}`;
 }
@@ -34,7 +35,9 @@ export async function verifySession(token: string, env: Bindings): Promise<Sessi
     const p=JSON.parse(new TextDecoder().decode(unb64(parts[1]))), now=Math.floor(Date.now()/1000);
     if(!Number.isFinite(p.exp)||!Number.isFinite(p.iat)||p.exp<=now||p.iat>now+30||p.exp-p.iat>TOKEN_SECONDS||typeof p.sub!=='string'||!['admin','customer'].includes(p.type))return null;
     if(p.type==='admin'&&p.session_version!==undefined&&(!Number.isSafeInteger(p.session_version)||p.session_version<0))return null;
-    return p;
+    if(p.reset_generation!==undefined&&(!Number.isSafeInteger(p.reset_generation)||p.reset_generation<0))return null;
+    // Tokens issued before reset support belong to the original generation only.
+    return {...p,reset_generation:p.reset_generation??0};
   } catch { return null; }
 }
 export async function hashPassword(password:string) {
@@ -105,6 +108,9 @@ export async function clearCustomerSession(c:any,verifiedSubject?:string) {
   deleteCookie(c,COOKIE,{path:'/',httpOnly:true,secure:new URL(c.req.url).protocol==='https:',sameSite:'Strict'});
 }
 export async function resolveActor(env:Bindings,payload:SessionPayload):Promise<SessionActor|null> {
+  // Only fresh identities verified with LINE omit this claim. Cookie payloads are
+  // normalized by verifySession so an old customer cannot revive after re-registering.
+  if(payload.reset_generation!==undefined&&payload.reset_generation!==await getSystemGeneration(env))return null;
   if(payload.type==='admin'){
     const row=await env.DB.prepare("SELECT id,name,role,session_version FROM admins WHERE id=? AND status='active'").bind(payload.sub).first<{id:string,name:string,role:string,session_version:number}>();
     return row&&(payload.session_version??0)===Number(row.session_version??0)?{...row,type:'admin'}:null;

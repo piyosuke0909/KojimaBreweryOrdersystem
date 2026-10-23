@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { Actor, Bindings } from '../types';
 import { lineAccessTokenConfigured, resolveLineAccessToken } from '../line-access-token';
+import { isSystemResetError, withSystemTask } from '../system-state';
 import { lineMessageNotificationStatement, readLineConversationNotifications } from './admin-notifications';
 import { ApiError, assertChanges, atomic, fail, now, one, rows, uid, type Row } from './common';
 
@@ -105,7 +106,7 @@ async function outcome(env:Bindings,who:Actor,row:Row,claim:string,status:'sent'
   try{
     await atomic(env.DB,[env.DB.prepare("UPDATE line_messages SET status=?,sent_at=?,error_code=? WHERE id=? AND status='pending' AND send_claim_id=?").bind(status,status==='sent'?now():null,errorCode,row.id,claim),assertChanges(env.DB,1,who,'LINE_MESSAGE_SEND_RESULT','line_messages',row.id,null,{status,error_code:errorCode},row.company_id)]);
     return publicMessage((await one(env.DB,'SELECT rowid AS sequence,* FROM line_messages WHERE id=?',row.id))!);
-  }catch{return {...publicMessage(row),status:'unknown',error_code:'LINE_DELIVERY_RECORDING_FAILED',can_retry:false};}
+  }catch(error){if(isSystemResetError(error))throw error;return {...publicMessage(row),status:'unknown',error_code:'LINE_DELIVERY_RECORDING_FAILED',can_retry:false};}
 }
 export async function sendLineMessage(env:Bindings,who:Actor,companyId:string,lineUserId:string,input:Row){
   const data=z.object({text:z.string().trim().min(1).max(5000),request_id:z.string().uuid(),retry:z.boolean().optional()}).strict().parse(input);
@@ -135,12 +136,15 @@ export async function sendLineMessage(env:Bindings,who:Actor,companyId:string,li
     return {message:publicMessage(existing),created:false};
   }
   const row=(await one(env.DB,'SELECT rowid AS sequence,* FROM line_messages WHERE id=?',id))!;
+  return withSystemTask(env,'line_chat',async task=>{
   let token:string;
-  try{token=await resolveLineAccessToken(env);await member(env,companyId,lineUserId,true);}
-  catch(error){const code=error instanceof ApiError&&/^LINE_[A-Z_]+$/.test(error.code)?error.code:'LINE_AUTHENTICATION_FAILED';return {message:await outcome(env,who,row,claim,'failed',code),created:!existing};}
+  try{await task.checkpoint();token=await resolveLineAccessToken(env);await member(env,companyId,lineUserId,true);}
+  catch(error){if(isSystemResetError(error))throw error;const code=error instanceof ApiError&&/^LINE_[A-Z_]+$/.test(error.code)?error.code:'LINE_AUTHENTICATION_FAILED';return {message:await outcome(env,who,row,claim,'failed',code),created:!existing};}
+  await task.checkpoint();
   try{
     const response=await fetch('https://api.line.me/v2/bot/message/push',{method:'POST',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json','X-Line-Retry-Key':data.request_id},body:JSON.stringify({to:contact.line_user_id,messages:[{type:'text',text:data.text}]}),redirect:'manual',signal:AbortSignal.timeout(10000)});
     const sent=response.ok||(response.status===409&&!!response.headers.get('x-line-accepted-request-id'));
     return {message:await outcome(env,who,row,claim,sent?'sent':response.status>=500?'unknown':'failed',sent?null:`LINE_HTTP_${response.status}`),created:!existing};
-  }catch{return {message:await outcome(env,who,row,claim,'unknown','LINE_DELIVERY_UNCONFIRMED'),created:!existing};}
+  }catch(error){if(isSystemResetError(error))throw error;return {message:await outcome(env,who,row,claim,'unknown','LINE_DELIVERY_UNCONFIRMED'),created:!existing};}
+  });
 }

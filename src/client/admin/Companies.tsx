@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
   Search, Plus, ArrowLeft, Building2, MapPin, QrCode, Tag, FileText,
@@ -429,6 +429,17 @@ function EntityForm({ title, fields, initial, path, method, extra, notice, onClo
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [confirming, setConfirming] = useState(false);
+  const confirmation = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!confirming) return;
+    const frame = window.requestAnimationFrame(() => {
+      const message = confirmation.current;
+      if (!message) return;
+      message.focus({ preventScroll: true });
+      message.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'center', inline: 'nearest' });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [confirming]);
   const update = (key: string, value: any) => { setForm(current => ({ ...current, [key]: value })); setConfirming(false); setError(''); };
 
   async function save() {
@@ -461,7 +472,7 @@ function EntityForm({ title, fields, initial, path, method, extra, notice, onClo
             {field.type === 'textarea' ? <textarea className="admin-input" rows={3} value={form[field.key] || ''} onChange={event => update(field.key, event.target.value)} placeholder={field.placeholder} required={field.required} style={{ minWidth: 0, maxWidth: '100%', width: '100%' }} /> : field.type === 'select' ? <select className="admin-select" value={form[field.key] || ''} onChange={event => update(field.key, event.target.value)} required={field.required} style={{ minWidth: 0, maxWidth: '100%', width: '100%' }}>{field.options?.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select> : <input className="admin-input" type={field.type || 'text'} value={field.type === 'date' ? dateFieldValue(form[field.key]) : form[field.key] ?? ''} onChange={event => update(field.key, event.target.value)} required={field.required} min={field.min} max={field.max} step={field.type === 'number' ? 1 : undefined} placeholder={field.placeholder} style={{ minWidth: 0, maxWidth: '100%', width: '100%' }} />}
           </>}
         </label>)}
-      </div>{confirming && <div className="admin-alert info">入力内容を確認しました。下の「確認して保存」を押すと反映されます。</div>}</div>
+      </div>{confirming && <div ref={confirmation} className="admin-alert info" role="status" tabIndex={-1}>入力内容を確認しました。下の「確認して保存」を押すと反映されます。</div>}</div>
       <div className="admin-modal-foot">
         {onDelete && <button type="button" className="admin-btn secondary" onClick={onDelete} disabled={busy}><Trash2 size={16} />削除</button>}
         <button type="button" className="admin-btn secondary" onClick={onClose} disabled={busy}>戻る</button>

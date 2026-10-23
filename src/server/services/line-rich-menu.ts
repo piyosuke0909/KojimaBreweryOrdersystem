@@ -1,6 +1,7 @@
 import type { Actor, Bindings } from '../types';
 import { ApiError, fail, now, uid } from './common';
 import { lineAccessTokenConfigured, resolveLineAccessToken } from '../line-access-token';
+import { isSystemResetError, withSystemTask, type SystemTask } from '../system-state';
 
 export const RICH_MENU_IMAGE_PATH = '/richmenu/kojima-richmenu.jpg';
 export const EXPECTED_LINE_BASIC_ID = '@060ucble';
@@ -26,10 +27,11 @@ export function richMenuDefinition(liffId:string, imageHash?:string):RichMenu {
   };
 }
 
-async function requireConfiguration(env:Bindings) {
+async function requireConfiguration(env:Bindings,task?:SystemTask) {
   if(env.APP_ENV!=='production')fail(409,'LINE_PRODUCTION_REQUIRED','LINEへの登録は本番環境から実行してください。');
   if(!lineAccessTokenConfigured(env))fail(503,'LINE_TOKEN_NOT_CONFIGURED','LINEの認証設定が未完了です。');
   if(!env.LIFF_ID)fail(503,'LINE_LIFF_NOT_CONFIGURED','LIFF IDが未設定です。');
+  await task?.checkpoint();
   return resolveLineAccessToken(env);
 }
 
@@ -65,7 +67,8 @@ async function safeLineFailureDetail(response:Response,token:string) {
     .replace(/[A-Za-z0-9+_\/=~-]{24,}/g,'[redacted]').replace(/[\r\n\t]/g,' ').slice(0,240);
 }
 
-async function lineRequest(token:string,path:string,init:RequestInit={},dataApi=false,allow404=false) {
+async function lineRequest(token:string,path:string,init:RequestInit={},dataApi=false,allow404=false,task?:SystemTask) {
+  await task?.checkpoint();
   let response:Response;
   try {
     // workerd supports follow/manual, not error. Reject returned redirects via the !ok check below.
@@ -89,13 +92,13 @@ async function lineRequest(token:string,path:string,init:RequestInit={},dataApi=
   }
   return response!;
 }
-async function lineJson(token:string,path:string,init?:RequestInit,allow404=false):Promise<any> {
-  const response=await lineRequest(token,path,init,false,allow404);
+async function lineJson(token:string,path:string,init?:RequestInit,allow404=false,task?:SystemTask):Promise<any> {
+  const response=await lineRequest(token,path,init,false,allow404,task);
   if(!response)return null;
   try{return await response.json();}catch{fail(502,'LINE_INVALID_RESPONSE','LINEからの応答を確認できませんでした。');}
 }
-async function botInfo(token:string):Promise<Bot> {
-  const bot=await lineJson(token,'/info');
+async function botInfo(token:string,task?:SystemTask):Promise<Bot> {
+  const bot=await lineJson(token,'/info',undefined,false,task);
   if(bot?.basicId!==EXPECTED_LINE_BASIC_ID)fail(409,'LINE_ACCOUNT_MISMATCH',`接続先のLINE公式アカウントが小島醸造（${EXPECTED_LINE_BASIC_ID}）と一致しません。アクセストークンを確認してください。`);
   return {display_name:String(bot.displayName??'小島醸造'),basic_id:bot.basicId,...(typeof bot.pictureUrl==='string'?{picture_url:bot.pictureUrl}:{})};
 }
@@ -103,9 +106,9 @@ function validMenuId(value:unknown):string {
   if(typeof value!=='string'||!ID_PATTERN.test(value))fail(502,'LINE_INVALID_RESPONSE','LINEのリッチメニューIDを確認できませんでした。');
   return value as string;
 }
-async function defaultMenuState(token:string):Promise<DefaultMenuState> {
+async function defaultMenuState(token:string,task?:SystemTask):Promise<DefaultMenuState> {
   try {
-    const value=await lineJson(token,'/user/all/richmenu',undefined,true);
+    const value=await lineJson(token,'/user/all/richmenu',undefined,true,task);
     return {id:value===null?null:validMenuId(value.richMenuId),inaccessible:false};
   } catch(error) {
     if(error instanceof ApiError&&error.code==='LINE_DEFAULT_MENU_FOREIGN')return {id:null,inaccessible:true};
@@ -117,7 +120,7 @@ function safeMenu(value:any):RichMenu {
   if(!value?.size||!Array.isArray(value.areas)||typeof value.name!=='string')fail(502,'LINE_INVALID_RESPONSE','LINEのリッチメニュー設定を確認できませんでした。');
   return {size:{width:Number(value.size.width),height:Number(value.size.height)},selected:value.selected===true,name:value.name,chatBarText:String(value.chatBarText??''),areas:value.areas.map((area:any)=>({bounds:{x:Number(area.bounds?.x),y:Number(area.bounds?.y),width:Number(area.bounds?.width),height:Number(area.bounds?.height)},action:{type:String(area.action?.type??''),...(typeof area.action?.label==='string'?{label:area.action.label}:{}),...(typeof area.action?.uri==='string'?{uri:area.action.uri}:{})}}))};
 }
-async function menuInfo(token:string,id:string) {return safeMenu(await lineJson(token,`/richmenu/${validMenuId(id)}`));}
+async function menuInfo(token:string,id:string,task?:SystemTask) {return safeMenu(await lineJson(token,`/richmenu/${validMenuId(id)}`,undefined,false,task));}
 function sameMenu(a:RichMenu,b:RichMenu) {return JSON.stringify(a)===JSON.stringify(b);}
 async function sha256(bytes:Uint8Array) {return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes.slice().buffer as ArrayBuffer)),value=>value.toString(16).padStart(2,'0')).join('');}
 
@@ -150,8 +153,8 @@ async function imageAsset(env:Bindings,origin:string) {
   if(bytes.length>MAX_IMAGE_BYTES||dimensions?.width!==WIDTH||dimensions.height!==HEIGHT)fail(503,'RICH_MENU_IMAGE_INVALID','リッチメニュー画像は2500×1686px、1MB以下のJPEGにしてください。');
   return {bytes,hash:await sha256(bytes)};
 }
-async function imageMatches(token:string,id:string,hash:string) {
-  const response=await lineRequest(token,`/richmenu/${validMenuId(id)}/content`,undefined,true,true);
+async function imageMatches(token:string,id:string,hash:string,task?:SystemTask) {
+  const response=await lineRequest(token,`/richmenu/${validMenuId(id)}/content`,undefined,true,true,task);
   if(!response)return false;
   const bytes=new Uint8Array(await response.arrayBuffer());
   return bytes.length<=MAX_IMAGE_BYTES&&await sha256(bytes)===hash;
@@ -166,46 +169,50 @@ export async function lineRichMenuStatus(env:Bindings,origin:string) {
 }
 
 export async function installLineRichMenu(env:Bindings,origin:string):Promise<RichMenuInstall> {
-  const token=await requireConfiguration(env),definition=richMenuDefinition(env.LIFF_ID!);
+  return withSystemTask(env,'line_rich_menu',async task=>{
+  const token=await requireConfiguration(env,task),definition=richMenuDefinition(env.LIFF_ID!);
   const image=await imageAsset(env,origin),menu={...definition,name:`${MENU_NAME} ${image.hash}`};
-  const bot=await botInfo(token),previous=await defaultMenuState(token),previousId=previous.id;
-  if(previousId&&sameMenu(await menuInfo(token,previousId),menu)&&await imageMatches(token,previousId,image.hash))return {rich_menu_id:previousId,previous_rich_menu_id:previousId,previous_default_inaccessible:false,image_verified:true,bot,menu,already_installed:true};
+  const bot=await botInfo(token,task),previous=await defaultMenuState(token,task),previousId=previous.id;
+  if(previousId&&sameMenu(await menuInfo(token,previousId,task),menu)&&await imageMatches(token,previousId,image.hash,task))return {rich_menu_id:previousId,previous_rich_menu_id:previousId,previous_default_inaccessible:false,image_verified:true,bot,menu,already_installed:true};
   let createdId:string|undefined;
   try {
-    const created=await lineJson(token,'/richmenu',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(menu)});
+    const created=await lineJson(token,'/richmenu',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(menu)},false,task);
     createdId=validMenuId(created?.richMenuId);
-    await lineRequest(token,`/richmenu/${createdId}/content`,{method:'POST',headers:{'Content-Type':'image/jpeg'},body:image.bytes.slice().buffer as ArrayBuffer},true);
-    if(!await imageMatches(token,createdId,image.hash))fail(502,'LINE_IMAGE_VERIFICATION_FAILED','LINEに保存された画像が一致しませんでした。');
+    await lineRequest(token,`/richmenu/${createdId}/content`,{method:'POST',headers:{'Content-Type':'image/jpeg'},body:image.bytes.slice().buffer as ArrayBuffer},true,false,task);
+    if(!await imageMatches(token,createdId,image.hash,task))fail(502,'LINE_IMAGE_VERIFICATION_FAILED','LINEに保存された画像が一致しませんでした。');
     // Do not overwrite a menu changed in Official Account Manager while this request was preparing its image.
-    if(!sameDefault(await defaultMenuState(token),previous))fail(409,'LINE_MENU_CHANGED','LINE側のメニューが変更されました。状態を再取得してからお試しください。');
-    await lineRequest(token,`/user/all/richmenu/${createdId}`,{method:'POST'});
-    if((await defaultMenuState(token)).id!==createdId||!sameMenu(await menuInfo(token,createdId),menu))fail(502,'LINE_MENU_VERIFICATION_FAILED','LINEの既定メニュー反映を確認できませんでした。');
+    if(!sameDefault(await defaultMenuState(token,task),previous))fail(409,'LINE_MENU_CHANGED','LINE側のメニューが変更されました。状態を再取得してからお試しください。');
+    await lineRequest(token,`/user/all/richmenu/${createdId}`,{method:'POST'},false,false,task);
+    if((await defaultMenuState(token,task)).id!==createdId||!sameMenu(await menuInfo(token,createdId,task),menu))fail(502,'LINE_MENU_VERIFICATION_FAILED','LINEの既定メニュー反映を確認できませんでした。');
     return {rich_menu_id:createdId,previous_rich_menu_id:previousId,previous_default_inaccessible:previous.inaccessible,image_verified:true,bot,menu,already_installed:false};
   } catch(error) {
+    if(isSystemResetError(error))throw error;
     if(createdId){
       let retainedActiveMenu=false;
       try {
-        let current=await defaultMenuState(token);
+        let current=await defaultMenuState(token,task);
         if(current.id===createdId){
           if(previous.inaccessible){
             // The foreign default's ID is unavailable, so it cannot be safely restored.
             // Keep the new active menu whose image was already verified; never unset it.
             retainedActiveMenu=true;
           } else {
-            await lineRequest(token,previousId?`/user/all/richmenu/${previousId}`:'/user/all/richmenu',{method:previousId?'POST':'DELETE'});
-            current=await defaultMenuState(token);
+            await lineRequest(token,previousId?`/user/all/richmenu/${previousId}`:'/user/all/richmenu',{method:previousId?'POST':'DELETE'},false,false,task);
+            current=await defaultMenuState(token,task);
             if(!sameDefault(current,previous))throw new Error('rollback-not-confirmed');
           }
         }
         // No existing menu or per-user assignment is deleted. Only this request's new menu is removable.
-        if(!retainedActiveMenu&&current.id!==createdId)await lineRequest(token,`/richmenu/${createdId}`,{method:'DELETE'});
-      } catch {
+        if(!retainedActiveMenu&&current.id!==createdId)await lineRequest(token,`/richmenu/${createdId}`,{method:'DELETE'},false,false,task);
+      } catch(error) {
+        if(isSystemResetError(error))throw error;
         fail(502,'LINE_MENU_STATE_UNCONFIRMED','処理後のLINEメニュー状態を確認できませんでした。状態を再取得してください。既存メニューは削除していません。');
       }
       if(retainedActiveMenu)fail(502,'LINE_MENU_STATE_UNCONFIRMED','新しいメニューが標準に設定されていますが、処理結果を完全に確認できませんでした。以前のメニューは別チャネル所有で復元できないため、新しいメニューを保持しています。状態を再取得してください。');
     }
     throw error;
   }
+  });
 }
 
 /** Atomic D1 lease using append-only audit entries; simultaneous installations cannot race. */

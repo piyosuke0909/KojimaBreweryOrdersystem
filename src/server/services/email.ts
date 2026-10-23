@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { Actor, Bindings } from '../types';
 import { assertChanges, atomic, audit, fail, now, one, type Row } from './common';
+import { isSystemResetError, withSystemTask, type SystemTask } from '../system-state';
 
 const gmailScope='https://www.googleapis.com/auth/gmail.send';
 const encoder=new TextEncoder();
@@ -86,7 +87,8 @@ export async function startGmailAuthorization(env:Bindings,who:Actor,origin:stri
   for(const [key,value] of Object.entries({client_id:row.gmail_client_id,redirect_uri:uri,response_type:'code',scope:gmailScope,state,code_challenge:challenge,code_challenge_method:'S256',access_type:'offline',prompt:'consent',include_granted_scopes:'false'}))authorization.searchParams.set(key,value);
   return {authorization_url:authorization.href,redirect_uri:uri};
 }
-async function providerJson(url:string,init:RequestInit){
+async function providerJson(url:string,init:RequestInit,task?:SystemTask){
+  await task?.checkpoint();
   let response:Response;
   try{response=await fetch(url,{...init,redirect:'manual',signal:AbortSignal.timeout(10000)});}catch{fail(502,'GMAIL_CONNECTION_FAILED','Gmailへ接続できませんでした。時間をおいて再度お試しください。');}
   let value:Row={};try{value=await response!.json() as Row;}catch{/* Never include provider response data in errors. */}
@@ -103,17 +105,19 @@ function verifiedToken(value:Row,requireRefresh=false){
   return value.access_token as string;
 }
 export async function finishGmailAuthorization(env:Bindings,who:Actor,input:Row,origin:string){
+  return withSystemTask(env,'gmail_authorization',async task=>{
   const {state,code}=z.object({state:z.string().min(20).max(256),code:z.string().min(1).max(4096)}).strict().parse(input);
   const stateHash=await hash(state),stamp=now(),pending=await one(env.DB,'SELECT * FROM gmail_oauth_states WHERE state_hash=? AND admin_id=? AND expires_at>?',stateHash,who.id,stamp);
   const row=await mailConfigRow(env);
   if(!pending||!row||pending.config_version!==row.version||pending.client_id!==row.gmail_client_id||pending.redirect_uri!==redirectUri(origin))fail(409,'GMAIL_AUTHORIZATION_EXPIRED','連携操作の期限が切れたか設定が変更されました。「Gmailと連携」からやり直してください。');
   const verifier=await decrypt(env,pending!.code_verifier_ciphertext,'pkce:'+stateHash),secret=await decrypt(env,row!.gmail_client_secret_ciphertext,'client-secret');
   await atomic(env.DB,[env.DB.prepare('DELETE FROM gmail_oauth_states WHERE state_hash=? AND admin_id=? AND expires_at>?').bind(stateHash,who.id,stamp),assertChanges(env.DB,1,who,'GMAIL_OAUTH_CONSUME','email_notification_config','1',null,{authorization_consumed:true})]);
-  const result=await providerJson('https://oauth2.googleapis.com/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({grant_type:'authorization_code',code,client_id:row!.gmail_client_id,client_secret:secret!,redirect_uri:pending!.redirect_uri,code_verifier:verifier!})});
+  const result=await providerJson('https://oauth2.googleapis.com/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({grant_type:'authorization_code',code,client_id:row!.gmail_client_id,client_secret:secret!,redirect_uri:pending!.redirect_uri,code_verifier:verifier!})},task);
   verifiedToken(result,true);
   const refreshCipher=await encrypt(env,result.refresh_token,'refresh-token');
   await atomic(env.DB,[env.DB.prepare('UPDATE email_notification_config SET gmail_refresh_token_ciphertext=?,version=version+1,updated_at=? WHERE id=1 AND version=?').bind(refreshCipher,now(),row!.version),assertChanges(env.DB,1,who,'GMAIL_CONNECTED','email_notification_config','1',{gmail_connected:!!row!.gmail_refresh_token_ciphertext},{gmail_connected:true})]);
   return getMailSettings(env,origin);
+  });
 }
 export async function disconnectGmail(env:Bindings,who:Actor,origin:string){
   await atomic(env.DB,[env.DB.prepare("UPDATE email_notification_config SET gmail_refresh_token_ciphertext=NULL,enabled=CASE WHEN provider='gmail' THEN 0 ELSE enabled END,version=version+1,updated_at=? WHERE id=1").bind(now()),env.DB.prepare('DELETE FROM gmail_oauth_states'),audit(env.DB,who,'GMAIL_DISCONNECTED','email_notification_config','1',null,{gmail_connected:false})]);
@@ -130,25 +134,33 @@ async function deliver(env:Bindings,row:Row,subject:string,text:string):Promise<
   let addresses:string[];
   try{addresses=recipients(JSON.parse(row.recipients_json));}catch{return {status:'failed',sent_count:0,failed_count:0,diagnostic:'invalid_email_recipients'};}
   if(!addresses.length)return {status:'disabled',sent_count:0,failed_count:0,diagnostic:'recipients_not_configured'};
+  return withSystemTask(env,'email_delivery',async task=>{
   let access:string|undefined;
   try{
     if(row.provider==='gmail'){
       if(!row.gmail_client_id||!row.gmail_client_secret_ciphertext||!row.gmail_refresh_token_ciphertext||!row.sender_email)return {status:'failed',sent_count:0,failed_count:addresses.length,diagnostic:'gmail_not_connected'};
       const secret=await decrypt(env,row.gmail_client_secret_ciphertext,'client-secret'),refresh=await decrypt(env,row.gmail_refresh_token_ciphertext,'refresh-token');
-      const token=await providerJson('https://oauth2.googleapis.com/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({grant_type:'refresh_token',client_id:row.gmail_client_id,client_secret:secret!,refresh_token:refresh!})});
+      const token=await providerJson('https://oauth2.googleapis.com/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({grant_type:'refresh_token',client_id:row.gmail_client_id,client_secret:secret!,refresh_token:refresh!})},task);
       access=verifiedToken(token);
     }else if(!env.NOTIFICATION_EMAIL_API_KEY||!env.NOTIFICATION_FROM)return {status:'failed',sent_count:0,failed_count:addresses.length,diagnostic:'resend_not_configured'};
-  }catch(error){return {status:'failed',sent_count:0,failed_count:addresses.length,diagnostic:diagnostic(error)};}
+  }catch(error){if(isSystemResetError(error))throw error;return {status:'failed',sent_count:0,failed_count:addresses.length,diagnostic:diagnostic(error)};}
   // Each recipient receives a separate message; recipient addresses are never shared.
-  const results=await Promise.all(addresses.map(async to=>{
+  const settled=await Promise.allSettled(addresses.map(async to=>{
     try{
       const request=row.provider==='gmail'?{url:'https://gmail.googleapis.com/gmail/v1/users/me/messages/send',authorization:`Bearer ${access}`,data:{raw:mime(row.sender_email,to,subject,text)}}:{url:'https://api.resend.com/emails',authorization:`Bearer ${env.NOTIFICATION_EMAIL_API_KEY}`,data:{from:env.NOTIFICATION_FROM,to:[to],subject,text}};
+      await task.checkpoint();
       const response=await fetch(request.url,{method:'POST',headers:{Authorization:request.authorization,'Content-Type':'application/json'},body:JSON.stringify(request.data),redirect:'manual',signal:AbortSignal.timeout(10000)});
       return response.ok?{sent:true}:{sent:false,diagnostic:`${row.provider}_http_${response.status}`};
-    }catch{return {sent:false,diagnostic:'email_connection_failed'};}
+    }catch(error){if(isSystemResetError(error))throw error;return {sent:false,diagnostic:'email_connection_failed'};}
   }));
+  // Keep the lease until every accepted send finishes, including when another
+  // recipient's checkpoint fails. Promise.all would release it too early.
+  const rejected=settled.find(result=>result.status==='rejected');
+  if(rejected?.status==='rejected')throw rejected.reason;
+  const results=settled.map(result=>(result as PromiseFulfilledResult<{sent:boolean;diagnostic?:string}>).value);
   const sent=results.filter(result=>result.sent).length;
   return {status:sent===addresses.length?'sent':'failed',sent_count:sent,failed_count:addresses.length-sent,...(sent===addresses.length?{}:{diagnostic:results.find(result=>!result.sent)?.diagnostic})};
+  });
 }
 export async function sendOrderEmail(env:Bindings,order:Row,kind:MailKind,subject:string,text:string):Promise<MailResult>{
   if(String(order.id).startsWith('TEST-O'))return {status:'disabled',sent_count:0,failed_count:0,diagnostic:'demo_order'};

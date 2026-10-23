@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { DatabaseSync } from 'node:sqlite';
+import { migrateTestDatabase } from './helpers/migrate';
 import type { Bindings } from '../src/server/types';
 
 const SECRET = 'unit-test-channel-secret-not-for-production';
@@ -10,8 +12,9 @@ const issued = (access_token = ISSUED) => json({ access_token, token_type: 'Bear
 const environment = (overrides: Record<string, unknown> = {}) => ({ APP_ENV: 'production', LINE_MESSAGING_CHANNEL_ID: '2011903727', LINE_CHANNEL_SECRET: SECRET, ...overrides }) as unknown as Bindings;
 const resolver = () => import('../src/server/line-access-token');
 
+const recordingDatabases:DatabaseSync[]=[];
 beforeEach(() => vi.resetModules());
-afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.useRealTimers(); });
+afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.useRealTimers();for(const db of recordingDatabases.splice(0))db.close(); });
 
 describe('LINE stateless access-token lifecycle', () => {
   it('issues a token with the Messaging channel credentials and prefers automation to an existing invalid token', async () => {
@@ -156,8 +159,13 @@ describe('LINE stateless access-token lifecycle', () => {
 
 describe('notification authentication uses the shared resolver', () => {
   function recordingDatabase() {
-    const records: unknown[][] = [];
-    const db = { prepare: () => ({ bind: (...values: unknown[]) => ({ run: async () => { records.push(values); return {}; } }) }) } as unknown as D1Database;
+    const records: unknown[][] = [],sqlite=new DatabaseSync(':memory:');
+    migrateTestDatabase(sqlite);recordingDatabases.push(sqlite);
+    function prepare(sql:string,values:any[]=[]):any{
+      const execute=()=>{const result=sqlite.prepare(sql).run(...values);if(sql.includes('INSERT INTO audit_logs'))records.push(values);return {success:true,results:[],meta:{changes:Number(result.changes)}};};
+      return {bind:(...args:any[])=>prepare(sql,args),first:async()=>sqlite.prepare(sql).get(...values)??null,run:async()=>execute(),execute};
+    }
+    const db={prepare,batch:async(statements:any[])=>{sqlite.exec('BEGIN');try{const results=statements.map(statement=>statement.execute());sqlite.exec('COMMIT');return results;}catch(error){sqlite.exec('ROLLBACK');throw error;}}} as unknown as D1Database;
     return { db, records };
   }
 

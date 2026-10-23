@@ -669,4 +669,44 @@ export const line_message_unsends = sqliteTable('line_message_unsends', {
   created_at: text('created_at').notNull(),
 },(t)=>[primaryKey({columns:[t.line_message_id,t.line_user_id]})]);
 
-export const schema = { admins, companies, shipping_rules, shipping_addresses, invitations, line_users, contracts, products, company_product_prices, delivery_calendar, packaging_boxes, yamato_sizes, yamato_rates, orders, order_items, order_packages, order_package_items, order_revisions, order_requests, invoices, invoice_items, invoice_histories, delivery_note_histories, audit_logs, company_info, settings, report_settings, email_notification_config, gmail_oauth_states, admin_notifications, admin_notification_reads, line_messages, line_message_unsends };
+export const system_state = sqliteTable('system_state', {
+  id: integer('id').primaryKey().notNull(),
+  generation: integer('generation').notNull().default(0),
+  data_revision: integer('data_revision').notNull().default(0),
+}, (t) => [
+  check('system_state_singleton', sql`id = 1`),
+  check('system_state_generation', sql`generation >= 0`),
+  check('system_state_revision', sql`data_revision >= 0`),
+]);
+export const system_task_leases = sqliteTable('system_task_leases', {
+  id: text('id').primaryKey().notNull(),
+  generation: integer('generation').notNull(),
+  kind: text('kind').notNull(),
+  expires_at: text('expires_at').notNull(),
+}, (t) => [
+  check('system_task_leases_generation', sql`generation >= 0`),
+  index('system_task_leases_expires_idx').on(t.expires_at),
+]);
+export const system_reset_challenges = sqliteTable('system_reset_challenges', {
+  token_hash: text('token_hash').primaryKey().notNull(),
+  admin_id: text('admin_id').notNull().references(() => admins.id),
+  session_version: integer('session_version').notNull(),
+  credential_fingerprint: text('credential_fingerprint').notNull(),
+  generation: integer('generation').notNull(),
+  data_revision: integer('data_revision').notNull(),
+  counts_json: text('counts_json').notNull(),
+  created_at: text('created_at').notNull(),
+  expires_at: text('expires_at').notNull(),
+}, (t) => [
+  check('system_reset_challenges_hash', sql`length(token_hash) = 64`),
+  check('system_reset_challenges_session', sql`session_version >= 0`),
+  check('system_reset_challenges_credential', sql`length(credential_fingerprint) = 64`),
+  check('system_reset_challenges_generation', sql`generation >= 0`),
+  check('system_reset_challenges_revision', sql`data_revision >= 0`),
+  check('system_reset_challenges_counts', sql`json_valid(counts_json)`),
+  check('system_reset_challenges_lifetime', sql`expires_at > created_at`),
+  index('system_reset_challenges_admin_idx').on(t.admin_id),
+  index('system_reset_challenges_expires_idx').on(t.expires_at),
+]);
+
+export const schema = { admins, companies, shipping_rules, shipping_addresses, invitations, line_users, contracts, products, company_product_prices, delivery_calendar, packaging_boxes, yamato_sizes, yamato_rates, orders, order_items, order_packages, order_package_items, order_revisions, order_requests, invoices, invoice_items, invoice_histories, delivery_note_histories, audit_logs, company_info, settings, report_settings, email_notification_config, gmail_oauth_states, admin_notifications, admin_notification_reads, line_messages, line_message_unsends, system_state, system_task_leases, system_reset_challenges };

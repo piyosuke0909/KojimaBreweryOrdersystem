@@ -19,6 +19,8 @@ import { lineMessagesRoutes } from './routes/line-messages';
 import { receiveLineMessages } from './services/line-messages';
 import { billingDocumentRoutes } from './routes/billing-documents';
 import { adminAccountRoutes } from './routes/admin-account';
+import { systemStateMiddleware } from './system-state';
+import { systemResetRoutes } from './routes/system-reset';
 
 export const app = new Hono<AppEnv>();
 app.use('/api/*',async(c,next)=>{
@@ -35,6 +37,7 @@ app.use('/api/*',async(c,next)=>{
   await next();c.header('Server-Timing',`app;dur=${Date.now()-start}`);
 });
 app.use('/api/*',bodyLimit({maxSize:1024*1024,onError:c=>c.json({error:{code:'PAYLOAD_TOO_LARGE',message:'入力データが大きすぎます。'}},413)}));
+app.use('/api/*',systemStateMiddleware);
 app.get('/api/health',async c=>{
   await c.env.DB.prepare('SELECT 1').first();
   return c.json({data:{status:'ok',database:'ok',environment:c.env.APP_ENV??'production'}});
@@ -85,6 +88,7 @@ app.use('/api/admin',requireActor('admin'));
 app.route('/api/admin/mail-settings',emailRoutes);
 app.route('/api/admin/notifications',adminNotificationRoutes);
 app.route('/api/admin/account',adminAccountRoutes);
+app.route('/api/admin/reset',systemResetRoutes);
 app.route('/api/admin',lineMessagesRoutes);
 app.route('/api/admin',billingDocumentRoutes);
 app.route('/api/admin',adminRoutes);
