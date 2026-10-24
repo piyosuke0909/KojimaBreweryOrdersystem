@@ -233,8 +233,8 @@ describe('verified LINE invitation handoff through actual routes', () => {
   it('does not duplicate a member or consume another slot for concurrent confirmation of one handoff', async () => {
     const invite = await invitation(); const prepared = await prepare(invite.token);
     const results = await Promise.all([finish(prepared.handoff_id), finish(prepared.handoff_id)]);
-    expect(results.filter(result => result.status === 200)).toHaveLength(1);
-    expect(results.filter(result => result.status === 409)).toHaveLength(1);
+    expect(results.filter(result => result.status === 200)).toHaveLength(2);
+    expect(results[0].json.data.actor).toEqual(results[1].json.data.actor);
     expect(used(invite.id)).toBe(1); expect(memberCount()).toBe(1); expect(handoffCount()).toBe(0);
   });
 

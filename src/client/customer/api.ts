@@ -5,11 +5,12 @@ export class ApiError extends Error {
 }
 
 export async function api<T = any>(path: string, options: RequestInit = {}, envelope = false): Promise<T> {
-  const response = await fetch(path, {
+  let response: Response;
+  try { response = await fetch(path, {
     ...options,
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest', ...options.headers },
-  });
+  }); } catch { throw new ApiError('NETWORK_ERROR', '通信が途切れたため、受付結果を確認できませんでした。', 0); }
   let body: any;
   try { body = await response.json(); } catch { throw new ApiError('NETWORK_ERROR', 'サーバーからの応答を確認できませんでした。時間をおいて再度お試しください。', response.status); }
   if (!response.ok || body.error) throw new ApiError(body.error?.code || 'REQUEST_FAILED', body.error?.message || '処理に失敗しました。再度お試しください。', response.status);
@@ -48,6 +49,8 @@ export interface Address { id: string; name?: string; address_name?: string; rec
 export interface Quote {
   items: any[]; packages: any[]; items_subtotal: number; shipping_fee: number; tax_amount: number; total_amount: number;
   is_reference_tax?: boolean; shipping_address?: Address; delivery_dates?: string[];
+  quote_token?: string | null; quote_expires_at?: string | null;
+  shipping_snapshot?: { snap_recipient_name: string; snap_postal_code: string; snap_address: string; snap_phone: string } | null;
   shipping_features?: { packing_enabled: boolean; yamato_sizes_enabled: boolean; yamato_rates_enabled: boolean };
   shipping_fee_source?: 'automatic' | 'fixed' | 'manual' | 'free';
   delivery_method?: 'own_delivery' | 'yamato';

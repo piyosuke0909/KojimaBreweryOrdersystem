@@ -39,12 +39,18 @@ function enabled(value: Flag | undefined, fallback = false): boolean {
   throw new DomainError('INVALID_FLAG', '真偽値の設定が不正です。');
 }
 function roundTax(amount: number, rate: number, rounding: TaxRounding): number {
-  // Adding epsilon makes decimal rates such as 8.1% stable at integer boundaries.
-  const raw = amount * rate / 100;
-  const epsilon = Number.EPSILON * Math.max(1, Math.abs(raw)) * 2;
-  if (rounding === 'floor') return Math.floor(raw + epsilon);
-  if (rounding === 'ceil') return Math.ceil(raw - epsilon);
-  return Math.round(raw);
+  // Yen are integers. Express the configured decimal percentage as an exact
+  // fraction so floating-point corrections cannot cross a one-yen boundary.
+  const [coefficient, exponent = '0'] = String(rate).toLowerCase().split('e');
+  const [whole, fraction = ''] = coefficient!.split('.');
+  const power = Number(exponent) - fraction.length;
+  let numerator = BigInt(whole! + fraction), denominator = 100n;
+  if (power >= 0) numerator *= 10n ** BigInt(power);
+  else denominator *= 10n ** BigInt(-power);
+  const raw = BigInt(integer(amount, '課税対象額')) * numerator;
+  const quotient = raw / denominator, remainder = raw % denominator;
+  const increment = rounding === 'ceil' ? remainder > 0n : rounding === 'round' && remainder * 2n >= denominator;
+  return Number(quotient + (increment ? 1n : 0n));
 }
 export function computePricing(lines: PricingLine[], settings: PricingSettings = {}): PricingResult {
   const rate = numeric(settings.tax_rate, 10, '税率');
@@ -64,6 +70,51 @@ export function computePricing(lines: PricingLine[], settings: PricingSettings =
 
 export interface CalendarDay { date: string; is_deliverable: Flag }
 export interface DeliveryRule { allowed_periods_json?: string; delivery_method?: string; status?: string }
+export interface AutomaticShippingRule {
+  id: string;
+  delivery_method: string;
+  target_condition_json?: string | null;
+  status?: string;
+  deleted_at?: string | null;
+}
+export interface ShippingTargetAddress { city?: string | null }
+function shippingTargetCities(rule: AutomaticShippingRule): string[] | null {
+  let condition: unknown;
+  try { condition = JSON.parse(rule.target_condition_json || '{}'); }
+  catch { throw new DomainError('INVALID_DELIVERY_RULE', '配送ルールの対象地域設定が不正です。管理者にお問い合わせください。'); }
+  const invalid = (): never => { throw new DomainError('INVALID_DELIVERY_RULE', '配送ルールの対象市区町村は名称の一覧で設定してください。'); };
+  if (Array.isArray(condition)) {
+    if (condition.some(value => typeof value !== 'string' || !value.trim())) return invalid();
+    return condition.map(value => (value as string).trim());
+  }
+  if (!condition || typeof condition !== 'object') return invalid();
+  const target = condition as Record<string, unknown>, keys = Object.keys(target);
+  // Distance conditions need an administrator's explicit address assignment.
+  // Unknown restrictions must never be interpreted as a nationwide free rule.
+  if (keys.some(key => key !== 'cities' && key !== 'city')) return null;
+  if (!keys.length) return [];
+  if (keys.length > 1) return invalid();
+  const values = target[keys[0]!];
+  if (typeof values === 'string' && keys[0] === 'city') return values.trim() ? [values.trim()] : [];
+  if (!Array.isArray(values) || values.some(value => typeof value !== 'string' || !value.trim())) return invalid();
+  return values.map(value => (value as string).trim());
+}
+/** Both carriers honor the same target. Empty targets mean all regions. */
+export function matchesShippingRule(rule: AutomaticShippingRule, address: ShippingTargetAddress): boolean {
+  if ((rule.status && rule.status !== 'active') || rule.deleted_at || !['own_delivery', 'yamato'].includes(rule.delivery_method)) return false;
+  const cities = shippingTargetCities(rule);
+  return cities !== null && (cities.length === 0 || cities.includes(String(address.city || '').trim()));
+}
+/** Prefer matched own delivery, then a city-specific rule, then a stable rule ID. */
+export function selectAutomaticShippingRule<T extends AutomaticShippingRule>(rules: T[], address: ShippingTargetAddress): T | null {
+  const candidates = rules.flatMap(rule => {
+    if ((rule.status && rule.status !== 'active') || rule.deleted_at || !['own_delivery', 'yamato'].includes(rule.delivery_method)) return [];
+    const cities = shippingTargetCities(rule);
+    return cities !== null && (cities.length === 0 || cities.includes(String(address.city || '').trim())) ? [{ rule, specific: cities.length > 0 }] : [];
+  });
+  candidates.sort((a, b) => Number(b.rule.delivery_method === 'own_delivery') - Number(a.rule.delivery_method === 'own_delivery') || Number(b.specific) - Number(a.specific) || (a.rule.id === b.rule.id ? 0 : a.rule.id < b.rule.id ? -1 : 1));
+  return candidates[0]?.rule ?? null;
+}
 export interface CalendarSettings { min_lead_business_days?: Numeric; cancel_business_days?: Numeric; cancel_cutoff_time?: string }
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 function assertDate(date: string): void {

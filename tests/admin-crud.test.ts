@@ -1,3 +1,4 @@
+import { confirmedInput } from './helpers/confirmed-request';
 import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -43,6 +44,7 @@ beforeEach(async () => {
 afterEach(async () => { await Promise.allSettled(pending); vi.unstubAllGlobals(); db.sqlite.close(); });
 
 async function request(method: string, path: string, body?: unknown, cookie = ownerCookie) {
+  body = await confirmedInput(method, path, body, (m, p, b) => request(m, p, b, cookie));
   const response = await app.request(`https://orders.example${path}`, {
     method,
     headers: { Origin: 'https://orders.example', ...(cookie ? { Cookie: cookie } : {}), ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },

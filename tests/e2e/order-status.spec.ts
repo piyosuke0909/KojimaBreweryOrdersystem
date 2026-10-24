@@ -6,11 +6,16 @@ test('管理者が受付済と発送済を切り替え、発送後の編集・�
   const datesResponse = await page.request.get('/api/admin/companies/company-a/delivery-dates?shipping_address_id=address-a');
   expect(datesResponse.ok()).toBe(true);
   const dates = (await datesResponse.json()).data;
-  const createdResponse = await page.request.post('/api/admin/orders', { data: {
+  const input = {
     request_id: crypto.randomUUID(), company_id: 'company-a', shipping_address_id: 'address-a',
     desired_delivery_date: dates[0], items: [{ product_id: 'samurai-300', quantity: 1 }],
     is_test_order: true, note: '注文ステータスの画面回帰確認',
-  } });
+  };
+  const quoted = await page.request.post('/api/admin/orders/quote', { data: input });
+  expect(quoted.ok()).toBe(true);
+  const quote = (await quoted.json()).data;
+  expect(quote.quote_token).toEqual(expect.any(String));
+  const createdResponse = await page.request.post('/api/admin/orders', { data: { ...input, quote_token: quote.quote_token } });
   expect(createdResponse.ok()).toBe(true);
   const created = (await createdResponse.json()).data;
   const endpoint = `/api/admin/orders/${created.id}`;

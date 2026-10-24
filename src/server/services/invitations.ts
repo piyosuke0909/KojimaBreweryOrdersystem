@@ -3,6 +3,12 @@ import type { Bindings } from '../types';
 
 const TOKEN_PATTERN=/^[0-9a-f]{64}$/;
 const encoder=new TextEncoder();
+export type InvitationRegistration = Row & { registration_created:boolean };
+function registrationAudit(row:Row|null|undefined) {
+  if(!row)return null;
+  const {registration_handoff_hash:_receipt,session_version:_version,...business}=row;
+  return business;
+}
 function base64url(bytes:Uint8Array) {return btoa(String.fromCharCode(...bytes)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}
 function bytes(value:string) {
   if(!/^[A-Za-z0-9_-]+$/.test(value))throw new Error('Invalid envelope');
@@ -88,30 +94,30 @@ export async function invitationLookup(db: D1Database, token: string, checkCapac
 export async function invitationById(db:D1Database,id:string,checkCapacity=true):Promise<Row> {
   return validateInvitation(await one(db,`SELECT i.*,c.name AS company_name,c.status AS company_status FROM invitations i JOIN companies c ON c.id=i.company_id WHERE i.id=? AND i.deleted_at IS NULL AND c.deleted_at IS NULL`,id),checkCapacity);
 }
-export async function registerInvitation(db: D1Database, verifiedLine: {sub:string;name?:string}, token: string, staffName: string) {
+export async function registerInvitation(db: D1Database, verifiedLine: {sub:string;name?:string}, token: string, staffName: string):Promise<InvitationRegistration> {
   return registerVerifiedInvitation(db,verifiedLine,await invitationLookup(db,token,false),staffName);
 }
-export async function registerInvitationById(db:D1Database,verifiedLine:{sub:string;name?:string},id:string,staffName:string,guards:D1PreparedStatement[]) {
-  return registerVerifiedInvitation(db,verifiedLine,await invitationById(db,id,false),staffName,guards);
+export async function registerInvitationById(db:D1Database,verifiedLine:{sub:string;name?:string},id:string,staffName:string,guards:D1PreparedStatement[],handoffHash?:string):Promise<InvitationRegistration> {
+  return registerVerifiedInvitation(db,verifiedLine,await invitationById(db,id,false),staffName,guards,handoffHash);
 }
-async function registerVerifiedInvitation(db:D1Database,verifiedLine:{sub:string;name?:string},invitation:Row,staffName:string,guards:D1PreparedStatement[] = []) {
+async function registerVerifiedInvitation(db:D1Database,verifiedLine:{sub:string;name?:string},invitation:Row,staffName:string,guards:D1PreparedStatement[] = [],handoffHash?:string):Promise<InvitationRegistration> {
   const name=string(staffName,'担当者名',true,100);
   const existing=await one(db,'SELECT * FROM line_users WHERE line_user_id=?',verifiedLine.sub);
   if(existing?.status==='active' && existing.company_id!==invitation.company_id) fail(409,'ALREADY_REGISTERED','このLINEアカウントは別の取引先に登録されています。');
-  if(existing?.status==='active') { if(guards.length)await atomic(db,guards);return existing; }
+  if(existing?.status==='active') { if(guards.length)await atomic(db,guards);return {...existing,registration_created:false}; }
   const stamp=now(),id=existing?.id||uid();
-  const lineUser={id,company_id:invitation.company_id,line_user_id:verifiedLine.sub,staff_name:name,line_display_name:verifiedLine.name||null,invitation_id:invitation.id,registered_at:stamp,status:'active'};
+  const lineUser={id,company_id:invitation.company_id,line_user_id:verifiedLine.sub,staff_name:name,line_display_name:verifiedLine.name||null,invitation_id:invitation.id,registered_at:stamp,status:'active',session_version:existing?Number(existing.session_version)+1:0,registration_handoff_hash:handoffHash??null};
   const who={id:verifiedLine.sub,type:'customer',company_id:invitation.company_id};
-  const statements=[...guards,db.prepare("UPDATE invitations SET used_count=used_count+1 WHERE id=? AND deleted_at IS NULL AND status='active' AND EXISTS(SELECT 1 FROM companies c WHERE c.id=invitations.company_id AND c.status='active' AND c.deleted_at IS NULL) AND (expires_at IS NULL OR expires_at='' OR expires_at>?) AND (max_uses IS NULL OR used_count<max_uses)").bind(invitation.id,stamp),assertChanges(db,1,who,'LINE_USER_REGISTER','line_users',id,existing,lineUser,invitation.company_id)];
-  if(existing) statements.push(update(db,'line_users',lineUser,"id=? AND status='unlinked'",id),assertChanges(db,1,who,'LINE_USER_RELINK','line_users',id,existing,lineUser,invitation.company_id));
+  const statements=[...guards,db.prepare("UPDATE invitations SET used_count=used_count+1 WHERE id=? AND deleted_at IS NULL AND status='active' AND EXISTS(SELECT 1 FROM companies c WHERE c.id=invitations.company_id AND c.status='active' AND c.deleted_at IS NULL) AND (expires_at IS NULL OR expires_at='' OR expires_at>strftime('%Y-%m-%dT%H:%M:%fZ','now')) AND (max_uses IS NULL OR used_count<max_uses)").bind(invitation.id),assertChanges(db,1,who,'LINE_USER_REGISTER','line_users',id,registrationAudit(existing),registrationAudit(lineUser),invitation.company_id)];
+  if(existing) statements.push(update(db,'line_users',lineUser,"id=? AND status='unlinked' AND session_version=?",id,existing.session_version),assertChanges(db,1,who,'LINE_USER_RELINK','line_users',id,registrationAudit(existing),registrationAudit(lineUser),invitation.company_id));
   else statements.push(insert(db,'line_users',lineUser));
   try { await atomic(db,statements); }
   catch(error) {
     const concurrent=await one(db,"SELECT * FROM line_users WHERE line_user_id=? AND company_id=? AND status='active'",verifiedLine.sub,invitation.company_id);
-    if(!guards.length && concurrent && (String(error).includes('UNIQUE constraint failed: line_users.line_user_id') || (error instanceof Error && 'code' in error && error.code==='CONFLICT'))) return concurrent;
+    if(!guards.length && concurrent && (String(error).includes('UNIQUE constraint failed: line_users.line_user_id') || (error instanceof Error && 'code' in error && error.code==='CONFLICT'))) return {...concurrent,registration_created:false};
     throw error;
   }
-  return lineUser;
+  return {...lineUser,registration_created:true};
 }
 export async function issueInvitation(db: D1Database, who: Row, companyId: string, input: Row, origin: string, liffId?: string, secret?:string) {
   const entry=entryUrl(origin,liffId);

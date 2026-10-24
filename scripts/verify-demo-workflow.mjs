@@ -121,9 +121,14 @@ export async function verifyDemoWorkflow(api, opts, dependencies = {}) {
   persist(state); // Persist the idempotency key before any order mutation or LINE push.
   let order = existingOrder ? await api.get(`/api/admin/orders/${encodeURIComponent(existingOrder.id)}`) : null;
   let newlyCreated = false;
+  let createdInput = null;
   if (!order) {
     ensure(preview.delivery_dates.includes(state.desired_delivery_date), 'The saved demo date is no longer selectable. Review the saved workflow before continuing.');
-    const result = await api.request('/api/admin/orders', 'POST', { ...quoteInput, request_id: state.request_id, desired_delivery_date: state.desired_delivery_date, ordered_by_line_user_id: members[0].line_user_id, is_test_order: true, note: `[デモ・動作確認] ${FLOW_MARKER} 架空商品・架空住所・仮運賃による一連の確認です。発送・実請求・送金は行いません。` });
+    const input = { ...quoteInput, request_id: state.request_id, desired_delivery_date: state.desired_delivery_date, ordered_by_line_user_id: members[0].line_user_id, is_test_order: true, note: `[デモ・動作確認] ${FLOW_MARKER} 架空商品・架空住所・仮運賃による一連の確認です。発送・実請求・送金は行いません。` };
+    const signed = await api.write('/api/admin/orders/quote', input);
+    ensure(typeof signed.quote_token === 'string' && signed.quote_token && Date.parse(signed.quote_expires_at) > Date.now(), 'The dated demo quote has no valid confirmation token. No order was created.');
+    createdInput = { ...input, quote_token: signed.quote_token };
+    const result = await api.request('/api/admin/orders', 'POST', createdInput);
     order = result.data;
     newlyCreated = result.status === 201;
   }
@@ -163,16 +168,25 @@ export async function verifyDemoWorkflow(api, opts, dependencies = {}) {
   persist(state);
   const after = await api.get(`/api/admin/orders/${encodeURIComponent(order.id)}`);
   ensure(after.is_invoice_locked === 1, 'Invoice issuance did not protect the demo order from editing.');
-  // Replaying the identical UUID must return the same order without another push.
-  const replay = await api.request('/api/admin/orders', 'POST', { company_id: state.company_id, request_id: state.request_id });
-  ensure(replay.status === 200 && replay.data?.id === order.id, 'The demo order idempotency replay did not return the existing order.');
+  // Only an exact request body can be replayed. Existing/legacy workflow files do
+  // not contain the original body; confirm their result with the read-only API.
+  const recovered = await api.get(`/api/admin/order-requests/${encodeURIComponent(state.request_id)}`);
+  ensure(recovered.processed && recovered.order?.id === order.id, 'The saved demo request result could not be verified. No replacement order was created.');
+  let replayedThisRun = false;
+  if (newlyCreated && createdInput) {
+    const replay = await api.request('/api/admin/orders', 'POST', createdInput);
+    ensure(replay.status === 200 && replay.data?.id === order.id, 'The exact demo order replay did not return the existing order.');
+    replayedThisRun = true;
+    state.idempotent_replay_verified = true;
+    persist(state);
+  }
   const notificationAfterReplay = (await api.list(`/api/admin/audit?action=NOTIFICATION_ORDER_CREATE&q=${encodeURIComponent(order.id)}`)).filter((row) => row.target_id === order.id);
   ensure(notificationAfterReplay.length <= 1 && (!notificationAudit.length || same(notificationAudit.map((row) => row.id).sort(), notificationAfterReplay.map((row) => row.id).sort())), 'The idempotent replay added a second notification.');
   if (!notificationAudit.length && notificationAfterReplay.length === 1) notification = notificationAfterReplay[0].note;
   const membersAfter = (await api.get(companyPath)).line_users;
   const membership = (users) => users.map(({ id, line_user_id, company_id, status }) => [id, line_user_id, company_id, status]).sort((a, b) => String(a[0]).localeCompare(String(b[0])));
   ensure(same(membership(company.line_users), membership(membersAfter)), 'The company LINE registration list changed during verification. No member records were edited by this helper.');
-  const summary = { operation: 'verify_demo_workflow', mode: 'apply', verified_at: new Date().toISOString(), order_id: order.id, invoice_id: invoice.id, order_created_this_run: newlyCreated, order_actor: 'admin', administrator_list_verified: true, dashboard_database_read_verified: typeof dashboard.new_orders === 'number', dashboard_recent_order_visible: dashboard.recent_orders?.some((row) => row.id === order.id) ?? false, item_count: items.length, package_count: order.packages?.length ?? 0, shipping_fee: order.shipping_fee, order_total: order.total_amount, invoice_total: invoice.total_incl_tax, invoice_order_count: invoice.items.length, invoice_snapshot_verified: true, invoice_lock_verified: true, delivery_note_verified: true, line_notification_audit: notification, line_api_accepted: notification === 'sent', line_device_receipt: 'requires_user_confirmation', idempotent_replay_verified: true, duplicate_notification_recorded: false, existing_line_registrations_unchanged: true, pdf_downloads: [] };
+  const summary = { operation: 'verify_demo_workflow', mode: 'apply', verified_at: new Date().toISOString(), order_id: order.id, invoice_id: invoice.id, order_created_this_run: newlyCreated, order_actor: 'admin', administrator_list_verified: true, dashboard_database_read_verified: typeof dashboard.new_orders === 'number', dashboard_recent_order_visible: dashboard.recent_orders?.some((row) => row.id === order.id) ?? false, item_count: items.length, package_count: order.packages?.length ?? 0, shipping_fee: order.shipping_fee, order_total: order.total_amount, invoice_total: invoice.total_incl_tax, invoice_order_count: invoice.items.length, invoice_snapshot_verified: true, invoice_lock_verified: true, delivery_note_verified: true, line_notification_audit: notification, line_api_accepted: notification === 'sent', line_device_receipt: 'requires_user_confirmation', order_result_lookup_verified: true, idempotent_replay_verified: state.idempotent_replay_verified === true, idempotent_replay_this_run: replayedThisRun, duplicate_notification_recorded: false, existing_line_registrations_unchanged: true, pdf_downloads: [] };
   const saveEvidence = dependencies.saveEvidence ?? ((value) => privateJson(evidenceFile, value));
   saveEvidence(summary);
   if (opts.pdf) {

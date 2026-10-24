@@ -1,3 +1,4 @@
+import { confirmedInput } from './helpers/confirmed-request';
 import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, test } from 'vitest';
 
@@ -8,6 +9,7 @@ class Session {
   cookie = '';
   constructor(public readonly origin = base) {}
   async request(method: string, path: string, body?: Json, headers: Record<string, string> = {}) {
+    body = await confirmedInput(method,path,body,(m,p,b)=>this.request(m,p,b as Json,headers));
     const response = await fetch(`${this.origin}${path}`, {
       method,
       headers: {

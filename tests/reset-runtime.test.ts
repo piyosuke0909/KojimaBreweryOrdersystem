@@ -121,18 +121,18 @@ describe('sessions cannot revive after reset',()=>{
     const fresh={...env,DB:guardDatabase(native.binding(),1)};
     expect(await resolveActor(fresh,payload!)).toBeNull();
     // A freshly verified LINE identity can register and obtain a generation-1 cookie.
-    expect(await resolveActor(fresh,{sub:customer.id,type:'customer'})).toMatchObject({company_id:'new-company'});
-    expect((await verifySession(await signSession(customer,fresh),fresh))?.reset_generation).toBe(1);
+    const current=await resolveActor(fresh,{sub:customer.id,type:'customer'});
+    expect(current).toMatchObject({company_id:'new-company'});
+    expect((await verifySession(await signSession(current!,fresh),fresh))?.reset_generation).toBe(1);
   });
-  it('treats valid legacy JWTs as generation zero and rejects malformed generation claims',async()=>{
+  it('requires fresh LINE authentication for legacy customer JWTs and rejects malformed generation claims',async()=>{
     const encode=(value:unknown)=>Buffer.from(JSON.stringify(value)).toString('base64url');
     async function signed(generation:unknown,include=true){
       const seconds=Math.floor(Date.now()/1000),payload={sub:customer.id,type:'customer',iat:seconds,exp:seconds+3600,...(include?{reset_generation:generation}:{})};
       const unsigned=encode({alg:'HS256',typ:'JWT'})+'.'+encode(payload),key=await crypto.subtle.importKey('raw',new TextEncoder().encode(secret),{name:'HMAC',hash:'SHA-256'},false,['sign']);
       return unsigned+'.'+Buffer.from(await crypto.subtle.sign('HMAC',key,new TextEncoder().encode(unsigned))).toString('base64url');
     }
-    const legacy=await verifySession(await signed(undefined,false),env);expect(legacy?.reset_generation).toBe(0);
-    advance();expect(await resolveActor({...env,DB:guardDatabase(native.binding(),1)},legacy!)).toBeNull();
+    expect(await verifySession(await signed(undefined,false),env)).toBeNull();
     for(const bad of [-1,1.5,'1',null])expect(await verifySession(await signed(bad),env)).toBeNull();
   });
   it('preserves the per-admin session version check in addition to the reset generation',async()=>{

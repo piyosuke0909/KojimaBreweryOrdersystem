@@ -109,6 +109,8 @@ export const line_invitation_handoffs = sqliteTable('line_invitation_handoffs', 
 ]);
 
 export const line_users = sqliteTable('line_users', {
+  session_version: integer('session_version').notNull().default(0),
+  registration_handoff_hash: text('registration_handoff_hash'),
   id: text('id').primaryKey(),
   company_id: text('company_id').notNull().references(() => companies.id),
   line_user_id: text('line_user_id').notNull().unique(),
@@ -120,6 +122,8 @@ export const line_users = sqliteTable('line_users', {
   note: text('note'),
 }, (t) => [
   check('line_users_check_1', sql`status IN ('active','unlinked')`),
+  check('line_users_session_version', sql`session_version >= 0`),
+  check('line_users_registration_handoff_hash', sql`registration_handoff_hash IS NULL OR length(registration_handoff_hash) = 64`),
   index('line_users_company_id_status_idx').on(t.company_id, t.status),
 ]);
 
@@ -268,6 +272,8 @@ export const yamato_rates = sqliteTable('yamato_rates', {
 ]);
 
 export const orders = sqliteTable('orders', {
+  request_hash: text('request_hash'),
+  snap_shipping_taxable: integer('snap_shipping_taxable'),
   id: text('id').primaryKey(),
   request_id: text('request_id').notNull().unique(),
   company_id: text('company_id').notNull().references(() => companies.id),
@@ -312,6 +318,8 @@ export const orders = sqliteTable('orders', {
   check('orders_check_5', sql`snap_tax_rate BETWEEN 0 AND 100`),
   check('orders_check_6', sql`snap_tax_calc_unit IN ('invoice','order','item')`),
   check('orders_check_7', sql`snap_tax_rounding IN ('floor','ceil','round')`),
+  check('orders_request_hash', sql`request_hash IS NULL OR length(request_hash) = 64`),
+  check('orders_shipping_taxable', sql`snap_shipping_taxable IS NULL OR snap_shipping_taxable IN (0,1)`),
   check('orders_check_8', sql`edit_lock_status IN ('unlocked','locked')`),
   check('orders_check_9', sql`version > 0`),
   check('orders_check_10', sql`is_invoice_locked IN (0,1)`),

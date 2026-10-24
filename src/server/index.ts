@@ -57,7 +57,8 @@ for(const operation of ['prepare','resume','register-pending'] as const)app.post
     const link=await registerPendingInvitation(c.env,line,(body as any).handoff_id,(body as any).staff_name);
     const actor=await resolveActor(c.env,{sub:line.sub,type:'customer'});
     if(!actor)throw new HTTPException(403,{message:'利用者登録を確認できませんでした。'});
-    c.executionCtx.waitUntil(notifyWelcome(c.env,line.sub,link.staff_name));
+    if(actor.company_id!==link.company_id || actor.membership_id!==link.id || actor.membership_version!==Number(link.session_version))throw new ApiError(409,'REGISTRATION_CHANGED','登録状態が変わりました。LINEで再度ログインしてください。');
+    if(link.registration_created)c.executionCtx.waitUntil(notifyWelcome(c.env,line.sub,link.staff_name));
     return await attachSession(c,actor!);
   } catch(error) {await clearCustomerSession(c,verifiedSubject);throw error;}
 });
@@ -78,7 +79,8 @@ app.post('/api/public/invitations/register',async c=>{
     const link=await registerInvitation(c.env.DB,line,body.token,body.staff_name);
     const actor=await resolveActor(c.env,{sub:line.sub,type:'customer'});
     if(!actor)throw new HTTPException(403,{message:'利用者登録を確認できませんでした。'});
-    c.executionCtx.waitUntil(notifyWelcome(c.env,line.sub,link.staff_name));
+    if(actor.company_id!==link.company_id || actor.membership_id!==link.id || actor.membership_version!==Number(link.session_version))throw new ApiError(409,'REGISTRATION_CHANGED','登録状態が変わりました。LINEで再度ログインしてください。');
+    if(link.registration_created)c.executionCtx.waitUntil(notifyWelcome(c.env,line.sub,link.staff_name));
     return await attachSession(c,actor!);
   } catch(error) {await clearCustomerSession(c,verifiedSubject);throw error;}
 });

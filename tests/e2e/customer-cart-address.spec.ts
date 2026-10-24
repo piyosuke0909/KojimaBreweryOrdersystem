@@ -18,7 +18,7 @@ test('配送先を変更してもカートへ戻り、数量と備考を保持�
     const input = route.request().postDataJSON();
     quoteAddresses.push(input.shipping_address_id);
     const shipping = input.shipping_address_id === 'cart-address-a' ? 500 : 900;
-    return route.fulfill({ json: { data: { items_subtotal: 2000, shipping_fee: shipping, tax_amount: 200 + shipping / 10, total_amount: 2200 + shipping * 1.1, packages: [], is_reference_tax: true } } });
+    return route.fulfill({ json: { data: { items: input.items.map((item: any) => ({ ...item, unit_price: 1000, subtotal: item.quantity * 1000, snap_product_name: '確認用商品', snap_volume_ml: 300, snap_unit: '本' })), items_subtotal: 2000, shipping_fee: shipping, tax_amount: 200 + shipping / 10, total_amount: 2200 + shipping * 1.1, packages: [], is_reference_tax: true, shipping_address: addresses.find(address => address.id === input.shipping_address_id), quote_token: input.desired_delivery_date ? 'test-only-signed-cart-quote' : null, quote_expires_at: input.desired_delivery_date ? new Date(Date.now() + 600_000).toISOString() : null } } });
   });
   await page.goto('/order');
   await page.locator('.ko-order-product').first().getByRole('button', { name: /を増やす$/ }).click({ clickCount: 2 });

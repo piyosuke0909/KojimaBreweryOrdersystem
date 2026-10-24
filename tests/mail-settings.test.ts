@@ -234,6 +234,9 @@ describe('order email delivery using saved recipients', () => {
     const quoted = await orderRequest('/orders/quote', input);
     expect(quoted.status, JSON.stringify(quoted.json)).toBe(200);
     const payload = { ...input, desired_delivery_date: quoted.json.data.delivery_dates[0], request_id: crypto.randomUUID() };
+    const confirmed = await orderRequest('/orders/quote', payload);
+    expect(confirmed.status).toBe(200);
+    Object.assign(payload, { quote_token: confirmed.json.data.quote_token });
     const accepted = await orderRequest('/orders', payload);
     expect(accepted.status, JSON.stringify(accepted.json)).toBe(201);
     await Promise.all(pending);

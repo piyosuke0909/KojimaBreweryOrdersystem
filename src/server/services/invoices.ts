@@ -1,5 +1,6 @@
-import { computePricing, jstDate } from '../../domain';
-import { actor, assertChanges, atomic, audit, date, fail, insert, insertMany, now, one, rows, settings, string, uid, update, type Row } from './common';
+import { jstDate } from '../../domain';
+import { invoiceTaxFromOrders } from './tax-policy';
+import { actor, assertChanges, atomic, audit, date, fail, insert, insertMany, now, one, rows, string, uid, update, type Row } from './common';
 import type { Context } from 'hono';
 import type { AppEnv } from '../types';
 
@@ -19,7 +20,15 @@ export async function invoiceDetail(c:Context<AppEnv>,invoice:Row) {
   const latest=history.find(h=>h.action_type!=='cancel');
   return {...invoice,items,history,histories:history,snapshot:latest?JSON.parse(latest.snapshot_json):null,can_edit_presentation:['issued','paid'].includes(invoice.status)};
 }
+export function assertInvoiceConfirmation(invoice:Row,input:Row,status:'issued'|'cancelled',extraKeys:string[]=[]){
+  const allowed=new Set(['expected_version','expected_total','expected_status',...extraKeys]);
+  if(Object.keys(input).some(key=>!allowed.has(key))||!Number.isSafeInteger(input.expected_version)||input.expected_version<1||!Number.isSafeInteger(input.expected_total)||input.expected_total<0||input.expected_status!==status)
+    fail(400,'INVOICE_CONFIRMATION_REQUIRED','確認した請求書の版・金額・状態が必要です。画面を開き直してください。');
+  if(invoice.latest_version!==input.expected_version||invoice.total_incl_tax!==input.expected_total||invoice.status!==input.expected_status)
+    fail(409,'INVOICE_CONFIRMATION_CHANGED','確認後に請求書の版・金額・状態が変わりました。最新版を読み直し、もう一度確認してください。');
+}
 export async function issueInvoice(c:Context<AppEnv>,input:Row,previous?:Row) {
+  if(previous) assertInvoiceConfirmation(previous,input,'cancelled',['company_id','period_start','period_end','due_date','order_ids','note']);
   if(previous && previous.status!=='cancelled') fail(409,'INVOICE_NOT_CANCELLED','再発行するには先に請求を取り消してください。');
   const companyId=previous?.company_id || string(input.company_id,'取引先');
   const start=date(input.period_start || previous?.period_start,'対象期間開始'), end=date(input.period_end || previous?.period_end,'対象期間終了');
@@ -32,27 +41,18 @@ export async function issueInvoice(c:Context<AppEnv>,input:Row,previous?:Row) {
   const query=`SELECT * FROM orders WHERE company_id=? AND desired_delivery_date>=? AND desired_delivery_date<=? AND status!='cancelled' AND is_invoice_locked=0${orderIds?' AND id IN (SELECT value FROM json_each(?))':''} ORDER BY desired_delivery_date,id`;
   const orders=await rows(c.env.DB,query,companyId,start,end,...(orderIds?[JSON.stringify(orderIds)]:[]));
   if(!orders.length || (orderIds && orderIds.length!==orders.length)) fail(422,'INVALID_INVOICE_ORDERS','対象期間内の未請求注文を選択してください。キャンセル済み・請求済みの注文は含められません。');
-  const [config,issuer,report,contract]=await Promise.all([settings(c.env.DB),one(c.env.DB,'SELECT * FROM company_info WHERE id=1'),one(c.env.DB,'SELECT * FROM report_settings WHERE id=1'),one(c.env.DB,"SELECT * FROM contracts WHERE company_id=? AND status='active' AND deleted_at IS NULL ORDER BY start_date DESC LIMIT 1",companyId)]);
+  const [issuer,report,contract]=await Promise.all([one(c.env.DB,'SELECT * FROM company_info WHERE id=1'),one(c.env.DB,'SELECT * FROM report_settings WHERE id=1'),one(c.env.DB,"SELECT * FROM contracts WHERE company_id=? AND status='active' AND deleted_at IS NULL ORDER BY start_date DESC LIMIT 1",companyId)]);
   const details=await rows(c.env.DB,'SELECT * FROM order_items WHERE order_id IN (SELECT value FROM json_each(?)) ORDER BY order_id,line_no',JSON.stringify(orders.map(o=>o.id)));
   const subtotal=orders.reduce((sum,o)=>sum+o.items_subtotal+o.shipping_fee,0);
-  // Invoice-level rounding is applied once to each tax rate; order/item modes preserve their recorded tax.
-  let tax=0;
-  if(config.tax_calc_unit==='invoice') {
-    const groups=new Map<number,Row[]>();
-    for(const order of orders) groups.set(order.snap_tax_rate,[...(groups.get(order.snap_tax_rate)||[]),order]);
-    for(const [rate,group] of groups) {
-      const ids=new Set(group.map(o=>o.id));
-      const lines=details.filter(d=>ids.has(d.order_id));
-      tax+=computePricing(lines.map(l=>({unit_price:Number(l.unit_price),quantity:Number(l.quantity)})),{...config,tax_rate:rate,tax_calc_unit:'invoice',shipping_fee:group.reduce((s,o)=>s+o.shipping_fee,0)} as any).tax_amount;
-    }
-  } else tax=orders.reduce((sum,o)=>sum+o.tax_amount,0);
+  const {tax,policies,taxSettings}=invoiceTaxFromOrders(orders,details);
+  if(!Number.isSafeInteger(subtotal)||!Number.isSafeInteger(subtotal+tax))fail(422,'INVOICE_AMOUNT_TOO_LARGE','請求金額が扱える範囲を超えています。対象注文を分けてください。');
   const stamp=now(),today=jstDate(new Date()),id=previous?.id || `INV${today.replaceAll('-','').slice(0,6)}${uid().replaceAll('-','').slice(0,8).toUpperCase()}`,version=previous?previous.latest_version+1:1;
   const dueDate=input.due_date ? date(input.due_date,'支払期日') : previous?.due_date || null;
   const invoice={id,company_id:companyId,contract_id:contract?.id||null,period_start:start,period_end:end,subtotal_excl_tax:subtotal,tax_amount:tax,total_incl_tax:subtotal+tax,issued_date:today,due_date:dueDate,status:'issued',latest_version:version,snap_company_info_json:JSON.stringify(issuer||{}),note:input.note ? string(input.note,'備考',false,4000) : previous?.note||null};
-  const snapshot={kind:'invoice',version,invoice,issuer:issuer||{},company,contract,report_settings:report||{},tax_settings:config,orders:orders.map(o=>({...o,items:details.filter(d=>d.order_id===o.id)})),items:details,subtotal_excl_tax:subtotal,tax_amount:tax,total_incl_tax:subtotal+tax,issued_at:stamp,issued_by:actor(c).name};
+  const snapshot={kind:'invoice',version,invoice,issuer:issuer||{},company,contract,report_settings:report||{},tax_settings:taxSettings,tax_policies:policies,orders:orders.map(o=>({...o,items:details.filter(d=>d.order_id===o.id)})),items:details,subtotal_excl_tax:subtotal,tax_amount:tax,total_incl_tax:subtotal+tax,issued_at:stamp,issued_by:actor(c).name};
   const statements:D1PreparedStatement[]=[];
   if(previous) {
-    statements.push(update(c.env.DB,'invoices',invoice,"id=? AND status='cancelled' AND latest_version=?",id,previous.latest_version),assertChanges(c.env.DB,1,actor(c),'INVOICE_REISSUE','invoices',id,previous,invoice,companyId),c.env.DB.prepare('DELETE FROM invoice_items WHERE invoice_id=?').bind(id));
+    statements.push(update(c.env.DB,'invoices',invoice,"id=? AND status='cancelled' AND latest_version=? AND total_incl_tax=?",id,input.expected_version,input.expected_total),assertChanges(c.env.DB,1,actor(c),'INVOICE_REISSUE','invoices',id,previous,invoice,companyId),c.env.DB.prepare('DELETE FROM invoice_items WHERE invoice_id=?').bind(id));
   } else statements.push(insert(c.env.DB,'invoices',invoice));
   const versions=JSON.stringify(orders.map(o=>({id:o.id,version:o.version})));
   statements.push(c.env.DB.prepare("UPDATE orders SET is_invoice_locked=1,version=version+1,updated_at=?,edit_locked_by=NULL,edit_locked_at=NULL,edit_lock_expires_at=NULL,edit_lock_status='unlocked' WHERE id IN (SELECT json_extract(value,'$.id') FROM json_each(?)) AND version=(SELECT json_extract(value,'$.version') FROM json_each(?) WHERE json_extract(value,'$.id')=orders.id) AND is_invoice_locked=0 AND status!='cancelled' AND (edit_locked_by IS NULL OR edit_lock_expires_at<=?)").bind(stamp,versions,versions,stamp),assertChanges(c.env.DB,orders.length,actor(c),'INVOICE_ORDER_LOCK','invoices',id,null,{order_ids:orders.map(o=>o.id),is_invoice_locked:1},companyId));
@@ -62,10 +62,11 @@ export async function issueInvoice(c:Context<AppEnv>,input:Row,previous?:Row) {
   return invoiceDetail(c,invoice);
 }
 export async function cancelInvoice(c:Context<AppEnv>,invoice:Row,input:Row) {
+  assertInvoiceConfirmation(invoice,input,'issued',['reason']);
   if(invoice.status!=='issued') fail(409,'INVOICE_NOT_CANCELLABLE','発行済みの請求書のみ取り消せます。');
   const reason=string(input.reason,'取消理由',true,2000),stamp=now();
   const latest=await one(c.env.DB,"SELECT * FROM invoice_histories WHERE invoice_id=? AND version=? AND action_type IN ('issue','reissue')",invoice.id,invoice.latest_version);
   if(!latest) fail(409,'SNAPSHOT_MISSING','発行履歴が見つかりません。');
-  await atomic(c.env.DB,[update(c.env.DB,'invoices',{status:'cancelled'},"id=? AND status='issued' AND latest_version=?",invoice.id,invoice.latest_version),assertChanges(c.env.DB,1,actor(c),'INVOICE_CANCEL','invoices',invoice.id,invoice,{status:'cancelled',reason},invoice.company_id),c.env.DB.prepare('UPDATE orders SET is_invoice_locked=0,version=version+1,updated_at=? WHERE id IN (SELECT order_id FROM invoice_items WHERE invoice_id=?)').bind(stamp,invoice.id),insert(c.env.DB,'invoice_histories',{id:uid(),invoice_id:invoice.id,version:invoice.latest_version,action_type:'cancel',acted_at:stamp,acted_by:actor(c).id,snapshot_json:latest!.snapshot_json,cancelled_at:stamp,cancelled_by:actor(c).id,cancel_reason:reason})]);
+  await atomic(c.env.DB,[update(c.env.DB,'invoices',{status:'cancelled'},"id=? AND status='issued' AND latest_version=? AND total_incl_tax=?",invoice.id,input.expected_version,input.expected_total),assertChanges(c.env.DB,1,actor(c),'INVOICE_CANCEL','invoices',invoice.id,invoice,{status:'cancelled',reason},invoice.company_id),c.env.DB.prepare('UPDATE orders SET is_invoice_locked=0,version=version+1,updated_at=? WHERE id IN (SELECT order_id FROM invoice_items WHERE invoice_id=?)').bind(stamp,invoice.id),insert(c.env.DB,'invoice_histories',{id:uid(),invoice_id:invoice.id,version:invoice.latest_version,action_type:'cancel',acted_at:stamp,acted_by:actor(c).id,snapshot_json:latest!.snapshot_json,cancelled_at:stamp,cancelled_by:actor(c).id,cancel_reason:reason})]);
   return invoiceDetail(c,await findInvoice(c,invoice.id));
 }

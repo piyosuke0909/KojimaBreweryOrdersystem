@@ -4,7 +4,7 @@ import { jstDate } from '../../domain';
 import { actor, assertChanges, atomic, audit, body, date, fail, insert, integer, now, one, paginated, routerError, rows, settings, string, uid, update, type Row } from '../services/common';
 import { masterRoutes, saveMaster, softDeleteMaster } from '../services/masters';
 import { invitationTokenKey, issueInvitation, publicInvitation, restoreInvitationQr, savedInvitationQr } from '../services/invitations';
-import { cancelInvoice, findInvoice, invoiceDetail, issueInvoice, publicInvoiceHistory } from '../services/invoices';
+import { assertInvoiceConfirmation, cancelInvoice, findInvoice, invoiceDetail, issueInvoice, publicInvoiceHistory } from '../services/invoices';
 import { orderRoutes } from './orders';
 import { deliveryDates } from '../services/orders';
 import { lineRichMenuRoutes } from './line-rich-menu';
@@ -29,6 +29,7 @@ adminRoutes.get('/dashboard',async c=>{
 masterRoutes(adminRoutes);
 orderRoutes(adminRoutes,true);
 
+function publicLineUser(user:Row){const {registration_handoff_hash:_receipt,session_version:_version,...safe}=user;return safe;}
 async function companyExists(c:any) {
   const company=await one(c.env.DB,'SELECT * FROM companies WHERE id=? AND deleted_at IS NULL',c.req.param('id'));
   if(!company) fail(404,'NOT_FOUND','取引先が見つかりません。');
@@ -43,7 +44,7 @@ adminRoutes.get('/companies/:id',async c=>{
     rows(c.env.DB,'SELECT * FROM invitations WHERE company_id=? AND deleted_at IS NULL ORDER BY created_at DESC',id),
     rows(c.env.DB,'SELECT * FROM line_users WHERE company_id=? ORDER BY registered_at DESC',id)
   ]);
-  return c.json({data:{...company,addresses,prices,contracts,invitations:invitations.map(row=>publicInvitation({...row,company_status:company.status})),line_users:users}});
+  return c.json({data:{...company,addresses,prices,contracts,invitations:invitations.map(row=>publicInvitation({...row,company_status:company.status})),line_users:users.map(publicLineUser)}});
 });
 for(const [resource,table] of [['addresses','shipping_addresses'],['contracts','contracts']] as const) {
   adminRoutes.get(`/companies/:id/${resource}`,async c=>{await companyExists(c);return c.json({data:await rows(c.env.DB,`SELECT * FROM ${table} WHERE company_id=? AND deleted_at IS NULL`,c.req.param('id'))});});
@@ -140,12 +141,12 @@ adminRoutes.post('/companies/:id/invitations/:childId/revoke',async c=>{
   await atomic(c.env.DB,[update(c.env.DB,'invitations',{status:'revoked'},'id=?',invitation!.id),audit(c.env.DB,actor(c),'INVITE_REVOKE','invitations',invitation!.id,invitation,{status:'revoked'},invitation!.company_id)]);
   return c.json({data:{id:invitation!.id,status:'revoked'}});
 });
-adminRoutes.get('/companies/:id/line-users',async c=>{await companyExists(c);return c.json({data:await rows(c.env.DB,'SELECT * FROM line_users WHERE company_id=?',c.req.param('id'))});});
+adminRoutes.get('/companies/:id/line-users',async c=>{await companyExists(c);return c.json({data:(await rows(c.env.DB,'SELECT * FROM line_users WHERE company_id=?',c.req.param('id'))).map(publicLineUser)});});
 adminRoutes.post('/companies/:id/line-users/:childId/unlink',async c=>{
   const user=await one(c.env.DB,'SELECT * FROM line_users WHERE id=? AND company_id=?',c.req.param('childId'),c.req.param('id'));
   if(!user) fail(404,'NOT_FOUND','LINE利用者が見つかりません。');
-  await atomic(c.env.DB,[update(c.env.DB,'line_users',{status:'unlinked'},'id=?',user!.id),audit(c.env.DB,actor(c),'LINE_USER_UNLINK','line_users',user!.id,user,{status:'unlinked'},user!.company_id)]);
-  return c.json({data:{...user,status:'unlinked'}});
+  await atomic(c.env.DB,[update(c.env.DB,'line_users',{status:'unlinked',session_version:Number(user!.session_version)+1,registration_handoff_hash:null},'id=? AND company_id=? AND status=? AND session_version=?',user!.id,user!.company_id,user!.status,user!.session_version),assertChanges(c.env.DB,1,actor(c),'LINE_USER_UNLINK','line_users',user!.id,publicLineUser(user!),{status:'unlinked'},user!.company_id)]);
+  return c.json({data:publicLineUser({...user,status:'unlinked'})});
 });
 
 adminRoutes.get('/invoices',async c=>{
@@ -159,9 +160,10 @@ adminRoutes.get('/invoices/:id',async c=>c.json({data:await invoiceDetail(c,awai
 adminRoutes.post('/invoices/:id/cancel',async c=>c.json({data:await cancelInvoice(c,await findInvoice(c,c.req.param('id')),await body(c))}));
 adminRoutes.post('/invoices/:id/reissue',async c=>c.json({data:await issueInvoice(c,await body(c),await findInvoice(c,c.req.param('id')))}));
 adminRoutes.post('/invoices/:id/pay',async c=>{
-  const invoice=await findInvoice(c,c.req.param('id'));
+  const invoice=await findInvoice(c,c.req.param('id')),input=await body(c);
+  assertInvoiceConfirmation(invoice,input,'issued');
   if(invoice.status!=='issued') fail(409,'INVALID_INVOICE_STATUS','発行済みの請求書のみ入金済みにできます。');
-  await atomic(c.env.DB,[update(c.env.DB,'invoices',{status:'paid'},"id=? AND status='issued' AND latest_version=?",invoice.id,invoice.latest_version),assertChanges(c.env.DB,1,actor(c),'INVOICE_PAID','invoices',invoice.id,invoice,{status:'paid'},invoice.company_id)]);
+  await atomic(c.env.DB,[update(c.env.DB,'invoices',{status:'paid'},"id=? AND status='issued' AND latest_version=? AND total_incl_tax=?",invoice.id,input.expected_version,input.expected_total),assertChanges(c.env.DB,1,actor(c),'INVOICE_PAID','invoices',invoice.id,invoice,{status:'paid'},invoice.company_id)]);
   return c.json({data:await invoiceDetail(c,await findInvoice(c,invoice.id))});
 });
 adminRoutes.get('/invoices/:id/history',async c=>{await findInvoice(c,c.req.param('id'));return c.json({data:(await rows(c.env.DB,'SELECT * FROM invoice_histories WHERE invoice_id=? ORDER BY version DESC,acted_at DESC',c.req.param('id'))).map(publicInvoiceHistory)});});

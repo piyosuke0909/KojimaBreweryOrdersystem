@@ -18,11 +18,17 @@ function sessionSecret(env: Bindings) {
   return env.SESSION_SECRET!;
 }
 async function key(secret: string, usage: KeyUsage[]) { return crypto.subtle.importKey('raw', encoder.encode(secret), {name:'HMAC',hash:'SHA-256'}, false, usage); }
-type SessionActor = Actor & { session_version?: number };
-type SessionPayload = { sub:string; type:'admin'|'customer'; session_version?:number; reset_generation?:number };
+type SessionActor = Actor & { session_version?: number; membership_id?:string; membership_version?:number };
+type SessionPayload = { sub:string; type:'admin'|'customer'; session_version?:number; reset_generation?:number; membership_id?:string; company_id?:string; membership_version?:number };
 export async function signSession(actor: SessionActor, env: Bindings) {
+  let membership:{membership_id:string;company_id:string;membership_version:number}|undefined;
+  if(actor.type==='customer') {
+    const row=await env.DB.prepare("SELECT l.id membership_id,l.company_id,l.session_version membership_version FROM line_users l JOIN companies c ON c.id=l.company_id WHERE l.line_user_id=? AND l.status='active' AND c.status='active' AND c.deleted_at IS NULL").bind(actor.id).first<{membership_id:string;company_id:string;membership_version:number}>();
+    if(!row || (actor.company_id!==undefined&&actor.company_id!==row.company_id) || (actor.membership_id!==undefined&&actor.membership_id!==row.membership_id) || (actor.membership_version!==undefined&&actor.membership_version!==row.membership_version))fail(401,'利用者の登録状態が変わりました。LINEで再度ログインしてください。');
+    membership=row!;
+  }
   const header = b64(encoder.encode(JSON.stringify({alg:'HS256',typ:'JWT'})));
-  const body = b64(encoder.encode(JSON.stringify({sub:actor.id,type:actor.type,reset_generation:await getSystemGeneration(env),...(actor.type==='admin'?{session_version:actor.session_version??0}:{}),iat:Math.floor(Date.now()/1000),exp:Math.floor(Date.now()/1000)+TOKEN_SECONDS})));
+  const body = b64(encoder.encode(JSON.stringify({sub:actor.id,type:actor.type,reset_generation:await getSystemGeneration(env),...(actor.type==='admin'?{session_version:actor.session_version??0}:membership),iat:Math.floor(Date.now()/1000),exp:Math.floor(Date.now()/1000)+TOKEN_SECONDS})));
   const data = `${header}.${body}`;
   return `${data}.${b64(new Uint8Array(await crypto.subtle.sign('HMAC', await key(sessionSecret(env),['sign']), encoder.encode(data))))}`;
 }
@@ -35,6 +41,9 @@ export async function verifySession(token: string, env: Bindings): Promise<Sessi
     const p=JSON.parse(new TextDecoder().decode(unb64(parts[1]))), now=Math.floor(Date.now()/1000);
     if(!Number.isFinite(p.exp)||!Number.isFinite(p.iat)||p.exp<=now||p.iat>now+30||p.exp-p.iat>TOKEN_SECONDS||typeof p.sub!=='string'||!['admin','customer'].includes(p.type))return null;
     if(p.type==='admin'&&p.session_version!==undefined&&(!Number.isSafeInteger(p.session_version)||p.session_version<0))return null;
+    // Customer cookies issued before membership revocation support require fresh LINE authentication.
+    // Accepting their bare LINE subject would let an old cookie inherit a later registration.
+    if(p.type==='customer'&&(typeof p.membership_id!=='string'||!p.membership_id||typeof p.company_id!=='string'||!p.company_id||!Number.isSafeInteger(p.membership_version)||p.membership_version<0))return null;
     if(p.reset_generation!==undefined&&(!Number.isSafeInteger(p.reset_generation)||p.reset_generation<0))return null;
     // Tokens issued before reset support belong to the original generation only.
     return {...p,reset_generation:p.reset_generation??0};
@@ -115,7 +124,8 @@ export async function resolveActor(env:Bindings,payload:SessionPayload):Promise<
     const row=await env.DB.prepare("SELECT id,name,role,session_version FROM admins WHERE id=? AND status='active'").bind(payload.sub).first<{id:string,name:string,role:string,session_version:number}>();
     return row&&(payload.session_version??0)===Number(row.session_version??0)?{...row,type:'admin'}:null;
   }
-  const row=await env.DB.prepare("SELECT l.line_user_id id,l.company_id,l.staff_name,c.name company_name FROM line_users l JOIN companies c ON c.id=l.company_id WHERE l.line_user_id=? AND l.status='active' AND c.status='active' AND c.deleted_at IS NULL").bind(payload.sub).first<{id:string,company_id:string,staff_name:string,company_name:string}>();
+  const row=await env.DB.prepare("SELECT l.line_user_id id,l.id membership_id,l.session_version membership_version,l.company_id,l.staff_name,c.name company_name FROM line_users l JOIN companies c ON c.id=l.company_id WHERE l.line_user_id=? AND l.status='active' AND c.status='active' AND c.deleted_at IS NULL").bind(payload.sub).first<{id:string,membership_id:string,membership_version:number,company_id:string,staff_name:string,company_name:string}>();
+  if(row && payload.membership_id!==undefined&&(payload.membership_id!==row.membership_id||payload.company_id!==row.company_id||payload.membership_version!==row.membership_version))return null;
   return row?{...row,type:'customer',name:row.staff_name}:null;
 }
 export const requireActor = (type?:'admin'|'customer') => createMiddleware<AppEnv>(async(c,next)=>{

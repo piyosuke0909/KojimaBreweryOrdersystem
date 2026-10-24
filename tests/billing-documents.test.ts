@@ -1,3 +1,4 @@
+import { confirmedInput } from './helpers/confirmed-request';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { migrateTestDatabase } from './helpers/migrate';
@@ -67,6 +68,7 @@ const saved = (table: string, id: string) => db.sqlite.prepare(`SELECT * FROM ${
 const count = (table: string) => Number((db.sqlite.prepare(`SELECT COUNT(*) count FROM ${table}`).get() as any).count);
 const histories = (id: string) => db.sqlite.prepare('SELECT * FROM invoice_histories WHERE invoice_id=? ORDER BY version,acted_at,id').all(id) as any[];
 async function request(path: string, input?: unknown, who: Actor | null = owner, options: { origin?: string; method?: string } = {}) {
+  input = await confirmedInput(options.method || (input === undefined ? 'GET' : 'POST'), '/api/admin' + path, input, async (m,p,b) => {const r=await request(p.slice('/api/admin'.length),b,who,{...options,method:m});return {status:r.status,data:r.body.data};});
   const cookie = who ? 'kojima_session=' + await signSession(who, env) : null;
   const response = await app.request(origin + '/api/admin' + path, {
     method: options.method || (input === undefined ? 'GET' : 'POST'),

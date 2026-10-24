@@ -1,7 +1,13 @@
+export class AdminApiError extends Error {
+  constructor(message:string,public readonly status:number,public readonly code:string) { super(message); this.name='AdminApiError'; }
+}
 export async function apiRaw<T = any>(path: string, options: RequestInit = {}): Promise<{data:T;meta?:any}> {
-  const response = await fetch(path, { credentials: 'include', ...options, headers: { 'Content-Type': 'application/json', ...options.headers } });
+  let response:Response;
+  try { response = await fetch(path, { credentials: 'include', ...options, headers: { 'Content-Type': 'application/json', ...options.headers } }); }
+  catch { throw new AdminApiError('通信結果を確認できませんでした。受付結果を確認してから操作してください。',0,'NETWORK_ERROR'); }
   const body: any = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.error?.message || `通信に失敗しました（${response.status}）`);
+  if (!response.ok) throw new AdminApiError(body.error?.message || `通信に失敗しました（${response.status}）`,response.status,body.error?.code || 'REQUEST_FAILED');
+  if (!body || typeof body !== 'object' || !('data' in body)) throw new AdminApiError('応答の内容を確認できませんでした。受付結果を確認してください。',response.status,'INVALID_RESPONSE');
   return body;
 }
 export async function api<T = any>(path: string, options: RequestInit = {}): Promise<T> { return (await apiRaw<T>(path, options)).data; }

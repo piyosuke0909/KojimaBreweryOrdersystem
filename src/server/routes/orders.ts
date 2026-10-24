@@ -4,6 +4,7 @@ import { notifyOrder } from '../notifications';
 import { actor, assertChanges, atomic, audit, body, fail, integer, now, one, paginated, rows, update } from '../services/common';
 import { cancelOrder, createOrder, editOrder, findOrder, lockOrder, orderDetail, quote } from '../services/orders';
 import { normalizeOrderStatus, orderStatusValues } from '../../shared/order-status';
+import { quoteConsent } from '../services/quote-consent';
 
 export function orderRoutes(router:Hono<AppEnv>,admin:boolean) {
   router.get('/orders',async c=>{
@@ -16,7 +17,13 @@ export function orderRoutes(router:Hono<AppEnv>,admin:boolean) {
     for(const [q,op] of [['from','>='],['to','<=']]) if(c.req.query(q)) {filters.push(`o.desired_delivery_date${op}?`);args.push(c.req.query(q));}
     const response=await paginated(c,'orders o JOIN companies co ON co.id=o.company_id',filters.join(' AND '),args,'o.ordered_at DESC','o.*,co.name AS company_name');
     const result=await response.json() as {data:Record<string,any>[];meta:Record<string,any>};
-    return c.json({...result,data:result.data.map(order=>({...order,status:normalizeOrderStatus(order.status)}))});
+    return c.json({...result,data:result.data.map(order=>{const {request_hash:_requestHash,...safe}=order;return {...safe,status:normalizeOrderStatus(order.status)};})});
+  });
+  router.get('/order-requests/:requestId',async c=>{
+    const requestId=c.req.param('requestId');
+    if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestId))fail(400,'INVALID_REQUEST_ID','リクエストIDはUUIDで指定してください。');
+    const who=actor(c),order=await one(c.env.DB,`SELECT * FROM orders WHERE request_id=?${admin?'':' AND company_id=?'}`,requestId,...(admin?[]:[who.company_id]));
+    return c.json({data:{processed:!!order,order:order?await orderDetail(c,order):null}});
   });
   router.post('/orders',async c=>{
     const result=await createOrder(c,await body(c));
@@ -29,12 +36,12 @@ export function orderRoutes(router:Hono<AppEnv>,admin:boolean) {
     if(!companyId) fail(400,'INVALID_INPUT','取引先を指定してください。');
     const result=await quote(c,input,companyId,old);
     const {config,company,...safe}=result;
-    return c.json({data:safe});
+    return c.json({data:{...safe,...await quoteConsent(c,input,companyId,result,old)}});
   });
   if(admin) router.post('/orders/quote',async c=>{
     const input=await body(c),old=input.order_id?await findOrder(c,input.order_id):undefined;
     const result=await quote(c,input,old?.company_id || input.company_id,old);
-    const {config,company,...safe}=result;return c.json({data:safe});
+    const {config,company,...safe}=result;return c.json({data:{...safe,...await quoteConsent(c,input,old?.company_id || input.company_id,result,old)}});
   });
   router.get('/orders/:id',async c=>c.json({data:await orderDetail(c,await findOrder(c,c.req.param('id')))}));
   router.post('/orders/:id/lock',async c=>c.json({data:await lockOrder(c,await findOrder(c,c.req.param('id')))}));

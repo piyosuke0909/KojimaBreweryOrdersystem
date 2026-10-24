@@ -14,6 +14,10 @@ class DemoAPI {
   mutations = 0;
   notifications = 0;
   notificationResult = 'sent';
+  signedQuotes = true;
+  quoteInputs: Row[] = [];
+  orderInputs: Row[] = [];
+  requestLookups = 0;
   issuer: Row = { company_name: '小島醸造', display_name: '小島醸造', address: '既存の会社住所', bank_name: '既存銀行', bank_account_number: '1234567', note: '既存の会社情報' };
   settings: Row = { contact_phone: '既存電話', contact_email: 'existing@example.invalid', contact_hours: '', notification_email: '' };
   members: Row[] = [{ id: 'member-1', line_user_id: 'test-line-user-1', company_id: 'company-a', status: 'active' }];
@@ -39,6 +43,11 @@ class DemoAPI {
     if (path === '/api/admin/companies/company-a') return this.detail();
     if (path === '/api/admin/dashboard') return { new_orders: this.tables.orders.length, recent_orders: clone(this.tables.orders) };
     const parts = path.split('/');
+    if (parts[3] === 'order-requests') {
+      this.requestLookups++;
+      const order = this.tables.orders.find(row => row.request_id === decodeURIComponent(parts[4]));
+      return { processed: Boolean(order), order: order ? clone(order) : null };
+    }
     if (parts[3] === 'orders' && parts[5] === 'delivery-note') {
       const order = this.tables.orders.find((row) => row.id === parts[4]);
       return clone({ kind: 'delivery-note', order, items: order?.items, issuer: this.issuer });
@@ -61,10 +70,10 @@ class DemoAPI {
   quote(input: Row) {
     const items = input.items.map((item: Row) => ({ ...item, unit_price: this.tables.prices.find((price) => price.product_id === item.product_id && price.status === 'active')!.unit_price }));
     const subtotal = items.reduce((sum: number, item: Row) => sum + item.unit_price * item.quantity, 0);
-    return { items, packages: [{ package_no: 1 }, { package_no: 2 }], shipping_fee: 2000, total_amount: Math.round((subtotal + 2000) * 1.1), delivery_dates: [addDays(jstToday(), 10)] };
+    return { items, packages: [{ package_no: 1 }, { package_no: 2 }], shipping_fee: 2000, total_amount: Math.round((subtotal + 2000) * 1.1), delivery_dates: [addDays(jstToday(), 10)], ...(this.signedQuotes && input.desired_delivery_date ? { quote_token: 'unit-test-only-dated-quote', quote_expires_at: new Date(Date.now() + 600000).toISOString() } : {}) };
   }
   async write(path: string, input: Row, method = 'POST'): Promise<Row> {
-    if (path === '/api/admin/orders/quote') return clone(this.quote(input)); // Pure quote, no mutation.
+    if (path === '/api/admin/orders/quote') { this.quoteInputs.push(clone(input)); return clone(this.quote(input)); } // Pure quote, no mutation.
     this.mutations++;
     if (path === '/api/admin/company-info' || path === '/api/admin/settings') {
       const store = path.endsWith('company-info') ? this.issuer : this.settings;
@@ -103,8 +112,11 @@ class DemoAPI {
   async request(path: string, method = 'GET', input?: Row) {
     expect(path).toBe('/api/admin/orders');
     expect(method).toBe('POST');
+    this.orderInputs.push(clone(input!));
+    expect(input!.items).toHaveLength(3); expect(input!.shipping_address_id).toBeTruthy(); expect(input!.desired_delivery_date).toBeTruthy();
     const prior = this.tables.orders.find((order) => order.request_id === input!.request_id);
-    if (prior) return { status: 200, data: clone(prior) };
+    if (prior) { const { quote_token: _first, ...first } = this.orderInputs[0], { quote_token: _next, ...next } = input!; expect(next).toEqual(first); return { status: 200, data: clone(prior) }; }
+    expect(input!.quote_token).toBe('unit-test-only-dated-quote');
     expect(input!.is_test_order).toBe(true);
     expect(this.members.some((member) => member.line_user_id === input!.ordered_by_line_user_id)).toBe(true);
     this.mutations++;
@@ -188,13 +200,36 @@ describe('demo helper safety and single-order workflow', () => {
     expect(first.invoice_id).toBe(second.invoice_id);
     expect(second.line_api_accepted).toBe(true);
     expect(second.idempotent_replay_verified).toBe(true);
+    expect(first.idempotent_replay_this_run).toBe(true); expect(second.idempotent_replay_this_run).toBe(false);
+    expect(first.order_result_lookup_verified).toBe(true); expect(second.order_result_lookup_verified).toBe(true);
+    expect(api.orderInputs).toHaveLength(2); expect(api.orderInputs[1]).toEqual(api.orderInputs[0]);
+    expect(api.quoteInputs.some(input => Boolean(input.desired_delivery_date))).toBe(true);
     expect(api.mutations).toBe(writes);
     expect(api.tables.orders).toHaveLength(1);
     expect(api.tables.invoices).toHaveLength(1);
     expect(api.notifications).toBe(1);
     expect(api.members).toEqual(members);
     expect(JSON.stringify(state)).not.toContain(api.members[0].line_user_id);
+    expect(JSON.stringify(state)).not.toContain('unit-test-only-dated-quote');
     expect(JSON.stringify(evidence)).not.toContain(api.members[0].line_user_id);
+  });
+
+  it('requires a dated signed quote before creating any demo order or notification', async () => {
+    const api = new DemoAPI(), preparation = await prepared(api), before = api.mutations;
+    api.signedQuotes = false;
+    await expect(verifyDemoWorkflow(api, opts(true), { preparation, state: null, persist: () => {}, skipNotificationWait: true })).rejects.toThrow('no valid confirmation token');
+    expect(api.mutations).toBe(before); expect(api.tables.orders).toHaveLength(0); expect(api.notifications).toBe(0);
+  });
+
+  it('checks a legacy saved order through result lookup without inventing or replaying its original payload', async () => {
+    const api = new DemoAPI(), preparation = await prepared(api); let state: Row | null = null;
+    const dependencies = () => ({ preparation, state, persist: (value: Row) => { state = clone(value); }, saveEvidence: () => {}, skipNotificationWait: true });
+    await verifyDemoWorkflow(api, opts(true), dependencies());
+    delete (state as unknown as Row).idempotent_replay_verified;
+    const requests = api.orderInputs.length, mutations = api.mutations;
+    const result = await verifyDemoWorkflow(api, opts(true), dependencies());
+    expect(result.order_result_lookup_verified).toBe(true); expect(result.idempotent_replay_verified).toBe(false); expect(result.idempotent_replay_this_run).toBe(false);
+    expect(api.orderInputs).toHaveLength(requests); expect(api.mutations).toBe(mutations); expect(api.notifications).toBe(1);
   });
 
   it('refuses ambiguous recipients and missing notification authorization before creating an order', async () => {

@@ -1,3 +1,4 @@
+import { confirmedInput } from './helpers/confirmed-request';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { migrateTestDatabase } from './helpers/migrate';
@@ -40,6 +41,7 @@ beforeEach(()=>{
 });
 afterEach(async()=>{await Promise.allSettled(pending);db.sqlite.close();});
 async function request(path:string,body?:unknown,who:Actor|null=owner,method=body===undefined?'GET':'POST'){
+  body=await confirmedInput(method,path,body,async(m,p,b)=>{const r=await request(p,b,who,m);return {status:r.status,data:r.value.data};});
   const cookie=who?'kojima_session='+await signSession(who,env):null;
   const response=await app.request(origin+path,{method,headers:{Origin:origin,...(cookie?{Cookie:cookie}:{}),'Content-Type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)})},env,{waitUntil:(promise:Promise<unknown>)=>pending.push(promise),passThroughOnException(){}} as unknown as ExecutionContext);
   return {status:response.status,value:await response.json() as any};

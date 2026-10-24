@@ -10,7 +10,8 @@ customerRoutes.onError(routerError);
 customerRoutes.get('/me',async c=>{
   const who=actor(c);
   const [user,company,config]=await Promise.all([one(c.env.DB,"SELECT * FROM line_users WHERE line_user_id=? AND company_id=? AND status='active'",who.id,who.company_id),one(c.env.DB,'SELECT * FROM companies WHERE id=? AND deleted_at IS NULL',who.company_id),settings(c.env.DB)]);
-  return c.json({data:{...user,company,contact:{phone:config.contact_phone,email:config.contact_email,hours:config.contact_hours}}});
+  const {registration_handoff_hash:_receipt,session_version:_membershipVersion,...safeUser}=user||{};
+  return c.json({data:{...safeUser,company,contact:{phone:config.contact_phone,email:config.contact_email,hours:config.contact_hours}}});
 });
 customerRoutes.get('/catalog',async c=>{
   const today=jstDate(new Date());

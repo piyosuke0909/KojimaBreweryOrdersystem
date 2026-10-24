@@ -1,9 +1,11 @@
-import { calculatePackages, computePricing, getDeliveryDates, getShippingFeatures, canEditOrder, cancellationDeadline, jstDate, type PackagingBox, type YamatoSize, type YamatoRate } from '../../domain';
+import { calculatePackages, computePricing, getDeliveryDates, getShippingFeatures, canEditOrder, cancellationDeadline, jstDate, selectAutomaticShippingRule, type AutomaticShippingRule, type PackagingBox, type YamatoSize, type YamatoRate } from '../../domain';
 import { actor, ApiError, assertChanges, atomic, audit, date, fail, insert, insertMany, integer, now, one, rows, settings, string, uid, update, type Row } from './common';
 import type { Context } from 'hono';
 import type { AppEnv } from '../types';
 import { normalizeOrderStatus } from '../../shared/order-status';
 import { orderNotificationStatement } from './admin-notifications';
+import { captureQuoteState, completeQuoteState, orderRequestHash, quoteCommitGuard, rethrowQuoteConflict, verifyQuoteConsent } from './quote-consent';
+import { resolveOrderTaxPolicy } from './tax-policy';
 
 export async function findOrder(c: Context<AppEnv>, id: string) {
   const who=actor(c);
@@ -32,7 +34,8 @@ export async function orderDetail(c: Context<AppEnv>, order: Row) {
     try { if(!canEditOrder(order as any,new Date(),calendar as any,config))unavailableReason='変更・キャンセル期限を過ぎています。'; }
     catch { unavailableReason='期限設定を確認できないため編集・キャンセルできません。'; }
   }
-  return {...order,status,items,packages,revisions,can_edit:unavailableReason===null,can_cancel:unavailableReason===null,edit_unavailable_reason:unavailableReason,cancel_unavailable_reason:unavailableReason,edit_deadline:deadline};
+  const {request_hash:_requestHash,...safe}=order;
+  return {...safe,status,items,packages,revisions,can_edit:unavailableReason===null,can_cancel:unavailableReason===null,edit_unavailable_reason:unavailableReason,cancel_unavailable_reason:unavailableReason,edit_deadline:deadline};
 }
 export async function editable(c: Context<AppEnv>, order: Row, requireLock = false) {
   if (normalizeOrderStatus(order.status)!=='received') fail(409,'ORDER_NOT_EDITABLE','受付済みの注文だけを編集・キャンセルできます。');
@@ -52,10 +55,8 @@ export async function deliveryDates(db: D1Database, companyId: string, addressId
   if(address!.shipping_rule_id && !rule) fail(422,'SHIPPING_RULE_INACTIVE','配送先に設定された配送ルールが無効です。管理者にお問い合わせください。');
   if (!rule) {
     const rules=await rows(db,"SELECT * FROM shipping_rules WHERE status='active' AND deleted_at IS NULL");
-    rule=rules.find(r=>{
-      if(r.delivery_method!=='own_delivery') return false;
-      try { const v=JSON.parse(r.target_condition_json||'{}'); return (Array.isArray(v)?v:(v.cities||v.city||[])).includes(address!.city); } catch { return false; }
-    }) || rules.find(r=>r.delivery_method==='yamato') || null;
+    try { rule=selectAutomaticShippingRule(rules as AutomaticShippingRule[],address!) as Row|null; }
+    catch(error) { fail(422,'INVALID_DELIVERY_RULE',error instanceof Error?error.message:'配送ルールの対象条件が不正です。'); }
   }
   if (!rule) fail(422,'SHIPPING_RULE_MISSING','配送ルールが未設定です。管理者にお問い合わせください。');
   const [calendar,config]=await Promise.all([rows(db,'SELECT * FROM delivery_calendar WHERE deleted_at IS NULL'),settings(db)]);
@@ -63,6 +64,7 @@ export async function deliveryDates(db: D1Database, companyId: string, addressId
   return {address:address!,rule:rule!,calendar,config,dates};
 }
 export async function quote(c: Context<AppEnv>, input: Row, companyId: string, oldOrder?: Row) {
+  const quoteState=await captureQuoteState(c.env.DB);
   const company=await one(c.env.DB,"SELECT * FROM companies WHERE id=? AND status='active' AND deleted_at IS NULL",companyId);
   if (!company) fail(404,'COMPANY_NOT_FOUND','有効な取引先が見つかりません。');
   const addressId=string(input.shipping_address_id,'配送先');
@@ -128,11 +130,13 @@ export async function quote(c: Context<AppEnv>, input: Row, companyId: string, o
   let packing: any;
   try { packing=calculatePackages(items.map((i: Row)=>({product_id:i.product_id,volume_ml:i.snap_volume_ml,quantity:i.quantity,weight_kg:i.weight_kg,line_no:i.line_no})),boxes as PackagingBox[],sizes as YamatoSize[],rates as YamatoRate[],{...delivery.config,dest_region:originalPrefecture||delivery.address.prefecture,date:input.desired_delivery_date || today,delivery_method:shippingMethod,yamato_rates_enabled:calculateRates} as any); }
   catch(error) { fail(422,'PACKAGING_UNAVAILABLE',error instanceof Error ? error.message : '梱包・送料を計算できませんでした。'); }
-  shippingFee??=packing.shipping_fee;
-  const taxConfig=oldOrder ? {...delivery.config,tax_rate:oldOrder.snap_tax_rate,tax_calc_unit:oldOrder.snap_tax_calc_unit,tax_rounding:oldOrder.snap_tax_rounding} : delivery.config;
+  shippingFee=shippingFee??Number(packing.shipping_fee);
+  const oldItems=oldOrder?await rows(c.env.DB,'SELECT * FROM order_items WHERE order_id=? ORDER BY line_no',oldOrder.id):null;
+  const taxPolicy=oldOrder?resolveOrderTaxPolicy(oldOrder,oldItems!,shippingFee):null;
+  const taxConfig=taxPolicy?{...delivery.config,...taxPolicy}:delivery.config;
   const totals=computePricing(items,{...taxConfig,shipping_fee:shippingFee} as any);
   const originalAddress=sameAddress ? {snap_recipient_name:oldOrder.snap_recipient_name,snap_postal_code:oldOrder.snap_postal_code,snap_address:oldOrder.snap_address,snap_phone:oldOrder.snap_phone} : null;
-  return {...totals,items,packages:packing.packages,shipping_address:delivery.address,shipping_snapshot:originalAddress,delivery_method:shippingMethod,delivery_dates:delivery.dates,config:taxConfig,company,shipping_fee:shippingFee,is_shipping_fee_manual:['manual','fixed'].includes(shippingFeeSource)?1:0,shipping_features:shippingFeatures,shipping_fee_source:shippingFeeSource};
+  return completeQuoteState(c.env.DB,{...totals,items,packages:packing.packages,shipping_address:delivery.address,shipping_snapshot:originalAddress,delivery_method:shippingMethod,delivery_dates:delivery.dates,config:taxConfig,company,shipping_fee:shippingFee,is_shipping_fee_manual:['manual','fixed'].includes(shippingFeeSource)?1:0,shipping_features:shippingFeatures,shipping_fee_source:shippingFeeSource},quoteState);
 }
 export function itemStatements(db: D1Database, orderId: string, q: Row) {
   const itemRows:Row[]=[],packageRows:Row[]=[],packageItems:Row[]=[];
@@ -149,19 +153,20 @@ export function itemStatements(db: D1Database, orderId: string, q: Row) {
 }
 function snapshotFields(input: Row, q: Row) {
   const a=q.shipping_address;
-  return {shipping_address_id:a.id,desired_delivery_date:input.desired_delivery_date,snap_recipient_name:a.name,snap_postal_code:a.postal_code,snap_address:[a.prefecture,a.city,a.address_line1,a.address_line2].filter(Boolean).join(''),snap_phone:a.phone,...q.shipping_snapshot,snap_shipping_method:q.delivery_method==='own_delivery'?'自社配達':'ヤマト宅急便',snap_carrier_name:q.delivery_method==='own_delivery'?'自社便':'ヤマト運輸',items_subtotal:q.items_subtotal,shipping_fee:q.shipping_fee,is_shipping_fee_manual:q.is_shipping_fee_manual,shipping_fee_source:q.shipping_fee_source,snap_tax_rate:Number(q.config.tax_rate??10),snap_tax_calc_unit:q.config.tax_calc_unit||'invoice',snap_tax_rounding:q.config.tax_rounding||'floor',tax_amount:q.tax_amount,total_amount:q.total_amount,note:input.note ? string(input.note,'備考',false,4000) : null};
+  return {shipping_address_id:a.id,desired_delivery_date:input.desired_delivery_date,snap_recipient_name:a.name,snap_postal_code:a.postal_code,snap_address:[a.prefecture,a.city,a.address_line1,a.address_line2].filter(Boolean).join(''),snap_phone:a.phone,...q.shipping_snapshot,snap_shipping_method:q.delivery_method==='own_delivery'?'自社配達':'ヤマト宅急便',snap_carrier_name:q.delivery_method==='own_delivery'?'自社便':'ヤマト運輸',items_subtotal:q.items_subtotal,shipping_fee:q.shipping_fee,is_shipping_fee_manual:q.is_shipping_fee_manual,shipping_fee_source:q.shipping_fee_source,snap_tax_rate:Number(q.config.tax_rate??10),snap_tax_calc_unit:q.config.tax_calc_unit||'invoice',snap_tax_rounding:q.config.tax_rounding||'floor',snap_shipping_taxable:q.config.source==='neutral'?null:([true,1,'1','true'].includes(q.config.shipping_taxable??true)?1:0),tax_amount:q.tax_amount,total_amount:q.total_amount,note:input.note ? string(input.note,'備考',false,4000) : null};
 }
 export async function createOrder(c: Context<AppEnv>, input: Row) {
   const who=actor(c), companyId=who.type==='customer'?who.company_id!:string(input.company_id,'取引先');
   const requestId=string(input.request_id,'リクエストID',true,64);
   if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestId)) fail(400,'INVALID_REQUEST_ID','リクエストIDはUUIDで指定してください。');
+  const requestHash=await orderRequestHash(who,input,companyId);
   const existing=await one(c.env.DB,'SELECT * FROM orders WHERE request_id=?',requestId);
   if(existing) {
-    if(existing.company_id!==companyId) fail(409,'REQUEST_ID_USED','このリクエストIDは使用できません。');
-    return {order:await orderDetail(c,existing),created:false};
+    return existingRequestResult(c,existing,companyId,requestHash);
   }
   date(input.desired_delivery_date,'到着希望日');
   const q=await quote(c,input,companyId);
+  const quoteExpiry=await verifyQuoteConsent(c,input,companyId,q);
   let notificationRecipient:string|null=null;
   if(who.type==='customer'&&(input.ordered_by_line_user_id!=null||input.is_test_order!==undefined))fail(403,'ADMIN_ONLY','管理者専用の注文設定です。');
   if(input.is_test_order!==undefined&&typeof input.is_test_order!=='boolean')fail(400,'INVALID_INPUT','テスト注文の指定が不正です。');
@@ -172,16 +177,25 @@ export async function createOrder(c: Context<AppEnv>, input: Row) {
   const isTest=who.type==='admin'&&input.is_test_order===true;
   const stamp=now(), id=`${isTest?'TEST-':''}O${jstDate(new Date()).replaceAll('-','')}${uid().replaceAll('-','').slice(0,8).toUpperCase()}`;
   const contract=await one(c.env.DB,"SELECT id FROM contracts WHERE company_id=? AND status='active' AND deleted_at IS NULL AND (start_date IS NULL OR start_date<=?) AND (end_date IS NULL OR end_date>=?) ORDER BY start_date DESC LIMIT 1",companyId,jstDate(new Date()),jstDate(new Date()));
-  const order={id,request_id:requestId,company_id:companyId,contract_id:contract?.id||null,ordered_by_line_user_id:who.type==='customer'?who.id:notificationRecipient,ordered_by_name:who.name,ordered_at:stamp,updated_at:stamp,status:'received',...snapshotFields(input,q),version:1,is_invoice_locked:0,edit_lock_status:'unlocked'};
+  const order={id,request_id:requestId,request_hash:requestHash,company_id:companyId,contract_id:contract?.id||null,ordered_by_line_user_id:who.type==='customer'?who.id:notificationRecipient,ordered_by_name:who.name,ordered_at:stamp,updated_at:stamp,status:'received',...snapshotFields(input,q),version:1,is_invoice_locked:0,edit_lock_status:'unlocked'};
   try {
-    await atomic(c.env.DB,[insert(c.env.DB,'orders',order),...itemStatements(c.env.DB,id,q),insert(c.env.DB,'order_requests',{request_id:requestId,line_user_id:who.id,company_id:companyId,issued_at:stamp,processed_at:stamp,order_id:id,status:'completed'}),audit(c.env.DB,who,'ORDER_CREATE','orders',id,null,{...order,items:q.items},companyId),orderNotificationStatement(c.env.DB,{...order,company_name:q.company?.name},'create')]);
+    await atomic(c.env.DB,[quoteCommitGuard(c.env.DB,q,quoteExpiry),insert(c.env.DB,'orders',order),...itemStatements(c.env.DB,id,q),insert(c.env.DB,'order_requests',{request_id:requestId,line_user_id:who.id,company_id:companyId,issued_at:stamp,processed_at:stamp,order_id:id,status:'completed'}),audit(c.env.DB,who,'ORDER_CREATE','orders',id,null,{...order,items:q.items},companyId),orderNotificationStatement(c.env.DB,{...order,company_name:q.company?.name},'create')]);
   } catch(error) {
-    if(!String(error).includes('UNIQUE constraint failed')) throw error;
+    if(error instanceof ApiError && error.code==='SYSTEM_RESET_CHANGED')throw error;
+    // A simultaneous identical request can win either the unique key or the
+    // revision guard. Recover its exact result before returning a stale-quote error.
     const duplicate=await one(c.env.DB,'SELECT * FROM orders WHERE request_id=? AND company_id=?',requestId,companyId);
-    if(!duplicate) fail(409,'REQUEST_ID_USED','このリクエストIDは使用できません。');
-    return {order:await orderDetail(c,duplicate!),created:false};
+    if(duplicate)return existingRequestResult(c,duplicate,companyId,requestHash);
+    if(String(error).includes('UNIQUE constraint failed'))fail(409,'REQUEST_ID_USED','このリクエストIDは使用できません。');
+    rethrowQuoteConflict(error);
   }
   return {order:await orderDetail(c,order),created:true};
+}
+async function existingRequestResult(c:Context<AppEnv>,existing:Row,companyId:string,requestHash:string) {
+  if(existing.company_id!==companyId)fail(409,'REQUEST_ID_USED','このリクエストIDは使用できません。');
+  if(!existing.request_hash)fail(409,'REQUEST_RESULT_UNVERIFIABLE','この要求はすでに処理されています。受付結果を確認してから、必要な変更は注文の編集から行ってください。');
+  if(existing.request_hash!==requestHash)fail(409,'REQUEST_CONTENT_CHANGED','同じ要求番号で異なる注文内容が送信されました。受付結果を確認してから、必要な変更は注文の編集から行ってください。');
+  return {order:await orderDetail(c,existing),created:false};
 }
 export async function editOrder(c: Context<AppEnv>, order: Row, input: Row) {
   await editable(c,order,true);
@@ -189,10 +203,12 @@ export async function editOrder(c: Context<AppEnv>, order: Row, input: Row) {
   if(order.version!==version) fail(409,'VERSION_CONFLICT','別の操作で更新されています。再読み込みしてください。');
   date(input.desired_delivery_date,'到着希望日');
   const q=await quote(c,input,order.company_id,order);
+  const quoteExpiry=await verifyQuoteConsent(c,input,order.company_id,q,order);
   const before=await orderDetail(c,order), stamp=now();
   const data={...snapshotFields(input,q),updated_at:stamp,version:version+1,edit_lock_status:'unlocked',edit_locked_by:null,edit_locked_at:null,edit_lock_expires_at:null};
-  const statements=[update(c.env.DB,'orders',data,"id=? AND version=? AND status IN ('received','confirmed','preparing') AND is_invoice_locked=0 AND edit_locked_by=? AND edit_lock_expires_at>?",order.id,version,actor(c).id,stamp),assertChanges(c.env.DB,1,actor(c),'ORDER_EDIT','orders',order.id,before,{...order,...data,items:q.items},order.company_id),c.env.DB.prepare('DELETE FROM order_package_items WHERE order_id=?').bind(order.id),c.env.DB.prepare('DELETE FROM order_packages WHERE order_id=?').bind(order.id),c.env.DB.prepare('DELETE FROM order_items WHERE order_id=?').bind(order.id),...itemStatements(c.env.DB,order.id,q),insert(c.env.DB,'order_revisions',{id:uid(),order_id:order.id,revision_no:version,changed_at:stamp,changer_type:actor(c).type,changer_id:actor(c).id,before_json:JSON.stringify(before),after_json:JSON.stringify({...order,...data,items:q.items}),before_total:order.total_amount,after_total:q.total_amount,note:input.note||null}),orderNotificationStatement(c.env.DB,{...order,...data},'edit')];
-  await atomic(c.env.DB,statements);
+  const {request_hash:_requestHash,...safeOrder}=order;
+  const statements=[quoteCommitGuard(c.env.DB,q,quoteExpiry),update(c.env.DB,'orders',data,"id=? AND version=? AND status IN ('received','confirmed','preparing') AND is_invoice_locked=0 AND edit_locked_by=? AND edit_lock_expires_at>?",order.id,version,actor(c).id,stamp),assertChanges(c.env.DB,1,actor(c),'ORDER_EDIT','orders',order.id,before,{...safeOrder,...data,items:q.items},order.company_id),c.env.DB.prepare('DELETE FROM order_package_items WHERE order_id=?').bind(order.id),c.env.DB.prepare('DELETE FROM order_packages WHERE order_id=?').bind(order.id),c.env.DB.prepare('DELETE FROM order_items WHERE order_id=?').bind(order.id),...itemStatements(c.env.DB,order.id,q),insert(c.env.DB,'order_revisions',{id:uid(),order_id:order.id,revision_no:version,changed_at:stamp,changer_type:actor(c).type,changer_id:actor(c).id,before_json:JSON.stringify(before),after_json:JSON.stringify({...safeOrder,...data,items:q.items}),before_total:order.total_amount,after_total:q.total_amount,note:input.note||null}),orderNotificationStatement(c.env.DB,{...order,...data},'edit')];
+  try{await atomic(c.env.DB,statements);}catch(error){rethrowQuoteConflict(error);}
   return orderDetail(c,await findOrder(c,order.id));
 }
 export async function lockOrder(c: Context<AppEnv>, order: Row) {

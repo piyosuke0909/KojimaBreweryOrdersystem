@@ -1,5 +1,5 @@
-import { assertChanges, atomic, fail, now, one, uid, type Row } from './common';
-import { hashToken, invitationById, invitationLookup, registerInvitationById } from './invitations';
+import { assertChanges, atomic, fail, now, one, string, uid, type Row } from './common';
+import { hashToken, invitationById, invitationLookup, registerInvitationById, type InvitationRegistration } from './invitations';
 import type { Bindings } from '../types';
 
 type Identity = { sub:string; name?:string };
@@ -51,15 +51,32 @@ export async function resumeInvitationHandoff(env:Bindings,identity:Identity) {
   requireCapacity(invitation);
   return view(invitation,pending.handoff_id);
 }
-export async function registerPendingInvitation(env:Bindings,identity:Identity,handoffId:string,staffName:string) {
-  const hash=await subjectHash(env,identity),stamp=now();
+export async function registerPendingInvitation(env:Bindings,identity:Identity,handoffId:string,staffName:string):Promise<InvitationRegistration> {
+  const hash=await subjectHash(env,identity),stamp=now(),name=string(staffName,'担当者名',true,100);
+  // A receipt belongs to this Login channel, verified person and exact request.
+  // Store only its digest on the membership so unlink/relink can revoke it together.
+  const receiptHash=await hashToken(`line-registration-receipt:v1:${env.LINE_CHANNEL_ID}\0${identity.sub}\0${handoffId}`);
+  const completed=async():Promise<InvitationRegistration|null>=>{
+    const row=await one(env.DB,"SELECT l.* FROM line_users l JOIN companies c ON c.id=l.company_id WHERE l.line_user_id=? AND l.registration_handoff_hash=? AND l.status='active' AND c.status='active' AND c.deleted_at IS NULL",identity.sub,receiptHash);
+    if(row&&row.staff_name!==name)fail(409,'REGISTRATION_REQUEST_CHANGED','登録済みの要求と担当者名が異なります。LINEでログインし直して登録内容を確認してください。');
+    return row?{...row,registration_created:false}:null;
+  };
+  const receipt=await completed();
+  if(receipt)return receipt;
   const pending=await one(env.DB,'SELECT * FROM line_invitation_handoffs WHERE subject_hash=? AND handoff_id=? AND expires_at>?',hash,handoffId,stamp);
   if(!pending)fail(409,'INVITATION_HANDOFF_EXPIRED','登録の引き継ぎ情報が更新されたか、期限を過ぎています。招待QRから開き直してください。');
   const invitation=await invitationById(env.DB,pending!.invitation_id,false);
   if(!await existingMember(env.DB,identity,invitation))requireCapacity(invitation);
   const guards=[
-    env.DB.prepare('DELETE FROM line_invitation_handoffs WHERE subject_hash=? AND handoff_id=? AND invitation_id=? AND expires_at>?').bind(hash,handoffId,pending!.invitation_id,stamp),
+    env.DB.prepare("DELETE FROM line_invitation_handoffs WHERE subject_hash=? AND handoff_id=? AND invitation_id=? AND expires_at>strftime('%Y-%m-%dT%H:%M:%fZ','now')").bind(hash,handoffId,pending!.invitation_id),
     assertChanges(env.DB,1,{id:'line-invitation-handoff',type:'system'},'LINE_INVITATION_HANDOFF_CONSUME','line_invitation_handoffs',handoffId,null,{completed:true}),
   ];
-  return registerInvitationById(env.DB,identity,pending!.invitation_id,staffName,guards);
+  try{return await registerInvitationById(env.DB,identity,pending!.invitation_id,name,guards,receiptHash);}
+  catch(error){
+    // Two simultaneous confirmations may both read the pending row. Only one
+    // consumes it; the other may return only that exact committed registration.
+    const concurrent=await completed();
+    if(concurrent)return concurrent;
+    throw error;
+  }
 }

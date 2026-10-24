@@ -12,7 +12,7 @@ import { normalizeOrderStatus } from '../../shared/order-status';
 import '../customer.css';
 
 interface Config { liff_id?: string; line_official_account_id?: string; environment: string; demo_enabled: boolean; }
-interface CustomerAuth { actor: any; config: Config | null; loading: boolean; lineReady: boolean; lineAuthenticated: boolean; lineProfile: any; error: string | null; refresh: () => Promise<void>; demo: () => Promise<void>; login: () => void; }
+interface CustomerAuth { actor: any; config: Config | null; loading: boolean; lineReady: boolean; lineAuthenticated: boolean; lineProfile: any; error: string | null; refresh: (verifiedActor?: any) => Promise<void>; demo: () => Promise<void>; login: () => void; }
 const AuthContext = createContext<CustomerAuth>(null!);
 const useAuth = () => useContext(AuthContext);
 function lineCredentials(): { id_token: string } | { access_token: string } | null {
@@ -34,7 +34,14 @@ function AuthProvider({ children }: { children: ReactNode }) {
   const [lineProfile, setLineProfile] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
   const redirectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (verifiedActor?: any) => {
+    // Successful registration/authentication replies already describe the actor
+    // belonging to their freshly issued cookie. Do not lose that result to a
+    // second, unrelated session lookup or redirect to a consumed invitation.
+    if (verifiedActor !== undefined) {
+      if (verifiedActor?.type !== 'customer' || typeof verifiedActor.id !== 'string' || !verifiedActor.id || typeof verifiedActor.company_id !== 'string' || !verifiedActor.company_id) throw new Error('登録結果を確認できませんでした。LINEの本人確認をやり直してください。');
+      setActor(verifiedActor); setError(null); return;
+    }
     try { const result = await api('/api/auth/me'); setActor(result?.actor || null); }
     catch (err) { if (!(err instanceof ApiError && err.status === 401)) setError((err as Error).message); setActor(null); }
   }, []);
@@ -218,12 +225,29 @@ function OrderFlow({ orderId }: { orderId?: string }) {
   const addressReturn = useRef<'cart' | null>(null);
   const openAddresses = (returnTo: 'cart' | null) => { addressReturn.current = returnTo; setSheet('address'); };
   const [query, setQuery] = useState(''); const [filter, setFilter] = useState('all'); const [lock, setLock] = useState<any>(null);
-  const requestId = useRef(crypto.randomUUID()); const locked = useRef(false); const quoteRevision = useRef(0);
+  const requestId = useRef<string>(crypto.randomUUID()); const locked = useRef(false); const quoteRevision = useRef(0);
   const base = orderId ? `/orders/${orderId}/edit` : '/order'; const confirming = location.pathname.endsWith('/confirm');
   const [reload, setReload] = useState(0);
+  const [quoteKey, setQuoteKey] = useState(''), [quoteReload, setQuoteReload] = useState(0);
+  type PendingSubmission = { request_id: string; body?: Record<string, any>; confirmed_total?: number; conflict?: boolean; order?: any };
+  const [pending, setPending] = useState<PendingSubmission | null>(null), [checkingResult, setCheckingResult] = useState(false);
+  const [pendingReady, setPendingReady] = useState(Boolean(orderId));
+  const pendingKey = `kojima-order-pending:${actor.company_id}`;
+  const sending = useRef(false), completionSeen = useRef(false);
+  const clearPendingRecord = () => { if (orderId) return; try { sessionStorage.removeItem(pendingKey); } catch { /* Memory still protects the current page. */ } };
+  const rememberPending = (id: string) => { try { sessionStorage.setItem(pendingKey, id); } catch { /* Private browsing can disable storage. */ } };
   useEffect(() => {
-    if (!orderId && complete && location.pathname === '/order') {
-      setComplete(null); setQuantities({}); setDesiredDate(''); setNote(''); setError(null); requestId.current = crypto.randomUUID();
+    if (orderId) { setPendingReady(true); return; }
+    try {
+      const saved = sessionStorage.getItem(pendingKey);
+      if (saved && /^[0-9a-f-]{36}$/i.test(saved)) { requestId.current = saved; setPending({ request_id: saved }); }
+    } catch { /* An unavailable storage cannot change the in-memory request ID. */ }
+    setPendingReady(true);
+  }, [orderId, pendingKey]);
+  useEffect(() => {
+    if (complete && location.pathname.endsWith('/complete')) completionSeen.current = true;
+    if (!orderId && complete && completionSeen.current && location.pathname === '/order') {
+      setComplete(null); setPending(null); setQuantities({}); setDesiredDate(''); setNote(''); setError(null); requestId.current = crypto.randomUUID(); completionSeen.current = false;
     }
   }, [location.pathname, complete, orderId]);
   useEffect(() => {
@@ -264,30 +288,100 @@ function OrderFlow({ orderId }: { orderId?: string }) {
     if (location.pathname.endsWith('/calendar')) setSheet('calendar');
   }, [location.pathname]);
   const itemKey = JSON.stringify(items);
+  const inputKey = JSON.stringify([addressId, desiredDate, itemKey, orderId || null]);
   useEffect(() => {
-    if (!addressId || !items.length || complete) { setQuote(null); return; }
+    if (!addressId || !items.length || complete || pending) { setQuote(null); setQuoteKey(''); return; }
     const revision = ++quoteRevision.current; setQuoting(true); setQuoteError(null);
-    const timer = window.setTimeout(() => { api<Quote>('/api/customer/quote', { method: 'POST', body: JSON.stringify({ shipping_address_id: addressId, desired_delivery_date: desiredDate || undefined, items, ...(orderId ? { order_id: orderId } : {}) }) }).then((result) => { if (revision === quoteRevision.current) setQuote(result); }).catch((err) => { if (revision === quoteRevision.current) { setQuote(null); setQuoteError(err.message); } }).finally(() => { if (revision === quoteRevision.current) setQuoting(false); }); }, 220);
+    const timer = window.setTimeout(() => { api<Quote>('/api/customer/quote', { method: 'POST', body: JSON.stringify({ shipping_address_id: addressId, desired_delivery_date: desiredDate || undefined, items, ...(orderId ? { order_id: orderId } : {}) }) }).then((result) => {
+      if (revision === quoteRevision.current) { setQuote(result); setQuoteKey(inputKey); }
+    }).catch((err) => { if (revision === quoteRevision.current) { setQuote(null); setQuoteKey(''); setQuoteError(err.message); } }).finally(() => { if (revision === quoteRevision.current) setQuoting(false); }); }, 220);
     return () => { window.clearTimeout(timer); quoteRevision.current++; };
-  }, [addressId, desiredDate, itemKey, orderId, Boolean(complete)]);
-  const address = addresses.find((item) => item.id === addressId);
+  }, [addressId, desiredDate, itemKey, orderId, Boolean(complete), Boolean(pending), quoteReload]);
+  const currentQuote = quoteKey === inputKey ? quote : null;
+  const quotedItems = currentQuote?.items || [];
+  const quoteItemsMatch = quotedItems.length === items.length && items.every(item => quotedItems.some(line => line.product_id === item.product_id && line.quantity === item.quantity && Number.isSafeInteger(line.unit_price) && line.unit_price >= 0));
+  const quoteUsable = !!currentQuote?.quote_token && !!currentQuote.quote_expires_at && Date.parse(currentQuote.quote_expires_at) > Date.now() && quoteItemsMatch && !quoting && !quoteError;
+  const recheckQuote = (message: string) => {
+    setError(message); setQuote(null); setQuoteKey(''); setQuoteReload(value => value + 1);
+    setSheet('cart'); navigate(base, { replace: true });
+  };
+  useEffect(() => {
+    if (!currentQuote?.quote_token || !currentQuote.quote_expires_at || complete || pending) return;
+    const remaining = Date.parse(currentQuote.quote_expires_at) - Date.now();
+    if (!Number.isFinite(remaining)) return;
+    const timer = window.setTimeout(() => recheckQuote('見積の有効時間が切れました。最新の金額を確認してから、もう一度確定してください。'), Math.max(0, Math.min(remaining, 2_147_483_647)));
+    return () => window.clearTimeout(timer);
+  }, [currentQuote?.quote_token, currentQuote?.quote_expires_at, Boolean(complete), Boolean(pending)]);
+  const originalAddress = addresses.find((item) => item.id === addressId);
+  const address: Address | undefined = currentQuote?.shipping_snapshot ? {
+    recipient_name: currentQuote.shipping_snapshot.snap_recipient_name, postal_code: currentQuote.shipping_snapshot.snap_postal_code,
+    address: currentQuote.shipping_snapshot.snap_address, phone: currentQuote.shipping_snapshot.snap_phone, id: addressId,
+  } : currentQuote?.shipping_address || originalAddress;
   const totalQty = items.reduce((sum, item) => sum + item.quantity, 0);
-  const subtotal = items.reduce((sum, item) => sum + Number(products.find((product) => product.id === item.product_id)?.unit_price || 0) * item.quantity, 0);
+  const subtotal = currentQuote?.items_subtotal;
+  const quotedProduct = (id: string) => {
+    const product = products.find(value => value.id === id), line = quotedItems.find(value => value.product_id === id);
+    return line ? { ...product, id, name: line.snap_product_name || product?.name || id, volume_ml: line.snap_volume_ml || product?.volume_ml, unit_price: line.unit_price, unit: line.snap_unit || product?.unit } : null;
+  };
   const categories = [...new Set(products.map((product) => product.category).filter(Boolean))] as string[];
   const visible = products.filter((product) => (!query || `${productName(product)} ${product.short_description || ''}`.includes(query)) && (filter === 'all' || product.category === filter));
-  const setQuantity = (id: string, value: number) => { setQuantities((previous) => ({ ...previous, [id]: value })); setQuoteError(null); };
-  const confirm = () => { if (items.length && desiredDate && quote && !quoting && !quoteError) { setSheet(null); navigate(`${base}/confirm`); } };
-  const save = async () => {
-    if (saving || !quote || !desiredDate) return; setSaving(true); setError(null);
+  const setQuantity = (id: string, value: number) => { if (pending || saving) return; setQuantities((previous) => ({ ...previous, [id]: value })); setQuoteError(null); };
+  const confirm = () => { if (items.length && desiredDate && quoteUsable) { setSheet(null); navigate(`${base}/confirm`); } };
+  function finish(result: any) {
+    clearPendingRecord(); setPending(null); locked.current = false; setComplete(result); navigate(`${base}/complete`, { replace: true });
+  }
+  async function checkPending(value = pending) {
+    if (!value || checkingResult) return;
+    setCheckingResult(true); setError(null);
     try {
-      const body = { shipping_address_id: addressId, desired_delivery_date: desiredDate, items, note, ...(orderId ? { version: lock?.version ?? initialOrder?.version } : { request_id: requestId.current }) };
-      const result = await api(orderId ? `/api/customer/orders/${orderId}` : '/api/customer/orders', { method: orderId ? 'PUT' : 'POST', body: JSON.stringify(body) });
-      locked.current = false; setComplete(result); navigate(`${base}/complete`, { replace: true });
-    } catch (err) { setError((err as Error).message); } finally { setSaving(false); }
+      const result = await api<{ processed: boolean; order: any }>(`/api/customer/order-requests/${encodeURIComponent(value.request_id)}`);
+      if (result.processed && result.order) {
+        const savedItems = (result.order.items || []).map((item: any) => [item.product_id, item.quantity]).sort(([a]: any, [b]: any) => String(a).localeCompare(String(b)));
+        const sentItems = (value.body?.items || []).map((item: any) => [item.product_id, item.quantity]).sort(([a]: any, [b]: any) => String(a).localeCompare(String(b)));
+        const different = value.body && (result.order.shipping_address_id !== value.body.shipping_address_id || result.order.desired_delivery_date !== value.body.desired_delivery_date || String(result.order.note || '') !== String(value.body.note || '') || JSON.stringify(savedItems) !== JSON.stringify(sentItems) || (value.confirmed_total !== undefined && result.order.total_amount !== value.confirmed_total));
+        if (value.conflict || different) { setPending({ ...value, conflict: true, order: result.order }); setError('登録済みの注文と確認した内容が異なります。注文内容を確認してください。'); }
+        else finish(result.order);
+      } else setError('まだ受付結果を確認できません。内容を変えずに結果を確認してください。注文履歴でも確認できます。');
+    } catch (err) { setError((err as Error).message); }
+    finally { setCheckingResult(false); }
+  }
+  async function retryPending() {
+    if (!pending?.body || sending.current || checkingResult) return;
+    const held = pending; sending.current = true; setSaving(true); setError(null);
+    try { finish(await api('/api/customer/orders', { method: 'POST', body: JSON.stringify(held.body) })); }
+    catch (err) {
+      const conflict = err instanceof ApiError && ['REQUEST_CONTENT_CHANGED', 'REQUEST_RESULT_UNVERIFIABLE'].includes(err.code);
+      const next = { ...held, conflict: held.conflict || conflict }; setPending(next);
+      setError(err instanceof ApiError && err.code === 'QUOTE_CHANGED' ? '先の受付結果が不明なため、新しい金額では再送しません。受付結果または注文履歴を確認し、小島醸造へお問い合わせください。' : (err as Error).message);
+      if (conflict) void checkPending(next);
+    } finally { sending.current = false; setSaving(false); }
+  }
+  const save = async () => {
+    if (sending.current || saving || pending || !desiredDate) return;
+    if (!quoteUsable) { recheckQuote('見積を確認し直してください。最新の金額を確認するまで注文は送信しません。'); return; }
+    sending.current = true; setSaving(true); setError(null);
+    const body = { shipping_address_id: addressId, desired_delivery_date: desiredDate, items, note, quote_token: currentQuote!.quote_token, ...(orderId ? { version: lock?.version ?? initialOrder?.version } : { request_id: requestId.current }) };
+    if (!orderId) rememberPending(requestId.current);
+    try {
+      finish(await api(orderId ? `/api/customer/orders/${orderId}` : '/api/customer/orders', { method: orderId ? 'PUT' : 'POST', body: JSON.stringify(body) }));
+    } catch (err) {
+      if (err instanceof ApiError && err.code === 'QUOTE_CHANGED') {
+        clearPendingRecord(); recheckQuote('価格・送料・条件が変更されました。最新の見積を確認し、もう一度確定してください。');
+      } else if (!orderId && (!(err instanceof ApiError) || err.code === 'NETWORK_ERROR' || err.status >= 500 || ['REQUEST_CONTENT_CHANGED', 'REQUEST_RESULT_UNVERIFIABLE'].includes(err.code))) {
+        const value: PendingSubmission = { request_id: requestId.current, body, confirmed_total: currentQuote!.total_amount, conflict: err instanceof ApiError && ['REQUEST_CONTENT_CHANGED', 'REQUEST_RESULT_UNVERIFIABLE'].includes(err.code) };
+        setPending(value); setSheet(null); setError('受付結果を確認できませんでした。二重注文を防ぐため、内容の変更を停止しています。');
+        void checkPending(value);
+      } else {
+        if (!orderId) clearPendingRecord();
+        setError(orderId && (!(err instanceof ApiError) || err.code === 'NETWORK_ERROR' || err.status >= 500) ? '変更結果を確認できませんでした。再送せず、注文履歴から現在の内容を確認してください。' : (err as Error).message);
+        if (orderId && (!(err instanceof ApiError) || err.code === 'NETWORK_ERROR' || err.status >= 500)) { locked.current = false; setLock(null); }
+      }
+    } finally { sending.current = false; setSaving(false); }
   };
-  if (loading) return <Loading label={orderId ? '注文内容を準備しています' : 'お取引先専用の商品を読み込んでいます'} />;
+  if (loading || !pendingReady) return <Loading label={orderId ? '注文内容を準備しています' : 'お取引先専用の商品を読み込んでいます'} />;
+  if (pending && !complete) return <><Heading title="注文の受付結果を確認" /><div className="ko-panel"><h2 className="ko-section-title">{pending.conflict ? '前の送信内容を確認してください' : '二重注文を防ぐため確認が必要です'}</h2><p>通信結果が不明な間は、内容を変えた新しい注文を送信しません。</p>{error && <InlineError message={error} />}{pending.order ? <><p>同じ受付番号の注文は登録済みです。今回の変更内容を受け付けたという意味ではありません。</p><p><strong>{pending.order.id}</strong><br />税込合計 {money(pending.order.total_amount)}</p><Link className="ko-button" to={`/orders/${encodeURIComponent(pending.order.id)}`} onClick={clearPendingRecord}>登録済みの注文を確認する</Link></> : <><button className="ko-button" disabled={checkingResult || saving} onClick={() => void checkPending()}>{checkingResult ? '受付結果を確認中…' : '受付結果を確認する'}</button>{pending.body && !pending.conflict && <button className="ko-button secondary" disabled={checkingResult || saving} onClick={() => void retryPending()}>{saving ? '受付処理中…' : '同じ内容で再送する'}</button>}</>}<Link className="ko-text-link" to="/orders">注文履歴を確認する</Link><p className="ko-footnote">結果が確認できない場合は、小島醸造へお問い合わせください。画面を開き直しても、確認待ちの受付番号は保持します。</p></div></>;
   if (error && !products.length || error && orderId && !lock) return <><Heading title="ご注文を準備できませんでした" eyebrow="ORDER" back={orderId ? `/orders/${orderId}` : undefined} /><InlineError message={error!} retry={() => setReload((value) => value + 1)} /></>;
-  if (complete) return <><Heading title={orderId ? '変更を受け付けました' : 'ご注文を受け付けました'} eyebrow={orderId ? 'ORDER UPDATED' : 'THANK YOU'} /><div className="ko-panel ko-success"><div className="ko-success-icon"><Check size={34} /></div><div className="ko-receipt"><span>注文番号</span><strong>{complete.order_number || complete.id}</strong><span>受付日時</span><strong>{formatDate(complete.ordered_at || complete.updated_at || complete.created_at, true)}</strong><span>到着希望日</span><strong>{formatDate(complete.desired_delivery_date || desiredDate)}</strong>{orderId && <><span>改訂番号</span><strong>rev.{complete.revision_no || complete.version || (initialOrder?.version || 1) + 1}</strong></>}</div><p className="ko-muted">受付内容は注文履歴からご確認いただけます。</p><Link className="ko-button" to={`/orders/${complete.id || orderId}`}>注文内容を確認する <ChevronRight size={18} /></Link><Link className="ko-text-link" to="/orders">注文履歴へ</Link></div></>;
+  if (complete) return <><Heading title={orderId ? '変更を受け付けました' : 'ご注文を受け付けました'} eyebrow={orderId ? 'ORDER UPDATED' : 'THANK YOU'} /><div className="ko-panel ko-success"><div className="ko-success-icon"><Check size={34} /></div><div className="ko-receipt"><span>注文番号</span><strong>{complete.order_number || complete.id}</strong><span>受付日時</span><strong>{formatDate(complete.ordered_at || complete.updated_at || complete.created_at, true)}</strong><span>到着希望日</span><strong>{formatDate(complete.desired_delivery_date || desiredDate)}</strong><span>税込合計</span><strong>{money(complete.total_amount)}</strong><span>商品数量</span><strong>{complete.items?.reduce((sum: number, item: any) => sum + item.quantity, 0) ?? totalQty}本</strong>{orderId && <><span>改訂番号</span><strong>rev.{complete.revision_no || complete.version || (initialOrder?.version || 1) + 1}</strong></>}</div><p className="ko-muted">受付内容は注文履歴からご確認いただけます。</p><Link className="ko-button" to={`/orders/${complete.id || orderId}`}>注文内容を確認する <ChevronRight size={18} /></Link><Link className="ko-text-link" to="/orders">注文履歴へ</Link></div></>;
   if (!addresses.length) return <Unavailable title="配送先の登録が必要です" message="ご注文の前に配送先を登録する必要があります。小島醸造へ配送先の登録をご依頼ください。" />;
   return <div className={`ko-order-page${confirming ? '' : ' has-cart'}`}>
     <Heading title={confirming ? (orderId ? '変更内容の確認' : 'ご注文内容の確認') : orderId ? 'ご注文の変更' : 'ご注文'} eyebrow={confirming ? 'CONFIRM YOUR ORDER' : 'ORDER'} back={confirming ? base : orderId ? `/orders/${orderId}` : undefined}><span className="ko-company">{actor.company_name || actor.name} 様</span></Heading>
@@ -297,11 +391,11 @@ function OrderFlow({ orderId }: { orderId?: string }) {
     {confirming ? <>
       <div className="ko-stepper"><span className="done"><Check size={12} /> 商品を選ぶ</span><i /><span className="current">2 内容を確認</span><i /><span>3 完了</span></div>
       <div className="ko-panel"><h2 className="ko-section-title"><MapPin size={18} /> お届け先</h2><strong>{addressName(address)}</strong><p className="ko-muted">〒{address?.postal_code} {addressText(address)}<br />{address?.phone}</p><div className="ko-delivery-date"><CalendarDays size={20} /><div><small>到着希望日</small><strong>{formatDate(desiredDate)}</strong></div></div>{orderId && initialOrder?.desired_delivery_date !== desiredDate && <p className="ko-comparison">変更前：{formatDate(initialOrder.desired_delivery_date)}</p>}</div>
-      <div className="ko-panel"><h2 className="ko-section-title">ご注文商品 <small>{totalQty}本</small></h2>{items.map((item) => { const product = products.find((value) => value.id === item.product_id); const previous = initialOrder?.items?.find((value: any) => value.product_id === item.product_id); return <div className="ko-confirm-item" key={item.product_id}><div><strong>{product ? productName(product) : item.product_id}</strong><small>{product?.volume_ml || product?.capacity_ml}ml / {money(product?.unit_price)} × {item.quantity}本</small>{previous && previous.quantity !== item.quantity && <span className="ko-comparison">数量 {previous.quantity}本 → {item.quantity}本</span>}</div><strong>{money(Number(product?.unit_price || 0) * item.quantity)}</strong></div>; })}{initialOrder?.items?.filter((item: any) => !items.some((next) => next.product_id === item.product_id)).map((item: any) => <div className="ko-confirm-item ko-comparison" key={item.product_id}>{item.snap_product_name || item.product_name || item.name}：{item.quantity}本 → 削除</div>)}</div>
-      {quote && <div className="ko-panel"><QuoteSummary quote={quote} />{orderId && <div className="ko-price-comparison"><span>変更前 {money(initialOrder.total_amount)}</span><ArrowRight size={16} /><strong>変更後 {money(quote.total_amount)}</strong></div>}</div>}
+      <div className="ko-panel"><h2 className="ko-section-title">ご注文商品 <small>{totalQty}本</small></h2>{items.map((item) => { const product = quotedProduct(item.product_id); const previous = initialOrder?.items?.find((value: any) => value.product_id === item.product_id); return <div className="ko-confirm-item" key={item.product_id}><div><strong>{product ? productName(product) : item.product_id}</strong><small>{product?.volume_ml || product?.capacity_ml}ml / {money(product?.unit_price)} × {item.quantity}本</small>{previous && previous.quantity !== item.quantity && <span className="ko-comparison">数量 {previous.quantity}本 → {item.quantity}本</span>}</div><strong>{money(Number(product?.unit_price || 0) * item.quantity)}</strong></div>; })}{initialOrder?.items?.filter((item: any) => !items.some((next) => next.product_id === item.product_id)).map((item: any) => <div className="ko-confirm-item ko-comparison" key={item.product_id}>{item.snap_product_name || item.product_name || item.name}：{item.quantity}本 → 削除</div>)}</div>
+      {currentQuote && <div className="ko-panel"><QuoteSummary quote={currentQuote} />{orderId && <div className="ko-price-comparison"><span>変更前 {money(initialOrder.total_amount)}</span><ArrowRight size={16} /><strong>変更後 {money(currentQuote.total_amount)}</strong></div>}</div>}
       {note && <div className="ko-panel"><h2 className="ko-section-title">ご要望・備考</h2><p className="ko-preline">{note}</p></div>}
       {quoteError && <InlineError message={quoteError} />}<p className="ko-legal"><ShieldCheck size={15} />下記のボタンで{orderId ? '変更が' : 'ご注文が'}確定します。連続して押す必要はありません。</p>
-      <button className="ko-button" disabled={saving || quoting || !quote || !desiredDate || !!quoteError || (orderId ? !locked.current : false)} onClick={() => void save()}>{saving ? <><LoaderCircle className="ko-spin" size={19} />受付処理中…</> : <>{orderId ? '変更を確定する' : '注文を確定する'}<ArrowRight size={19} /></>}</button><button className="ko-button secondary" onClick={() => navigate(base)} disabled={saving}>商品選択に戻る</button>
+      <button className="ko-button" disabled={saving || !quoteUsable || !desiredDate || (orderId ? !locked.current : false)} onClick={() => void save()}>{saving ? <><LoaderCircle className="ko-spin" size={19} />受付処理中…</> : <>{orderId ? '変更を確定する' : '注文を確定する'}<ArrowRight size={19} /></>}</button><button className="ko-button secondary" onClick={() => navigate(base)} disabled={saving}>商品選択に戻る</button>
     </> : <>
       <button className="ko-address-bar" onClick={() => openAddresses(null)}><MapPin size={21} /><span><small>お届け先 <em className="ko-required">必須</em></small><strong>{addressName(address)}</strong></span><span className="ko-address-change">変更 <ChevronRight size={16} /></span></button>
       <p className="ko-order-intro">商品と数量を選び、カートで配送日をご指定ください。</p>
@@ -310,11 +404,11 @@ function OrderFlow({ orderId }: { orderId?: string }) {
       <div className="ko-catalog-caption"><span>商品一覧</span><small>{visible.length} 商品 / 価格はすべて税抜</small></div>
       {visible.length === 0 ? <Empty icon={Search} title={products.length ? '該当する商品はありません' : '現在ご注文いただける商品はありません'}>条件を変更するか、小島醸造までお問い合わせください。</Empty> : <div className="ko-order-products">{visible.map((product) => { const unavailable = product.unit_price == null || product.is_available === false || product.is_available === 0 || (product.sales_status ? product.sales_status !== 'on_sale' : ['stopped', 'unavailable', 'inactive'].includes(product.status || '')); return <article className={`ko-order-product${quantities[product.id] ? ' selected' : ''}`} key={product.id}><Link to={`/products/${product.id}`} tabIndex={-1} aria-label={`${productName(product)}の紹介`}><Bottle product={product} /></Link><div className="ko-order-product-content"><span className="ko-product-category">{product.category || '小島醸造'}{product.is_limited ? <em>お取引先限定</em> : null}</span><Link to={`/products/${product.id}`} className="ko-product-name">{productName(product)}</Link>{(product.short_description || product.description) && <p className="ko-product-description">{product.short_description || product.description}</p>}<span className="ko-product-volume">{product.volume_ml || product.capacity_ml}ml</span><div className="ko-product-bottom"><div className="ko-product-price">{unavailable ? <span className="ko-unavailable-label">現在注文できません</span> : <><strong>{money(product.unit_price)}</strong><small> / {product.unit || '本'}（税抜）</small></>}</div><Quantity value={quantities[product.id] || 0} disabled={unavailable} onChange={(value) => setQuantity(product.id, value)} label={`${productName(product)} ${product.volume_ml || product.capacity_ml || ''}ml`} /></div></div></article>; })}</div>}
       <p className="ko-order-assurance">送料と合計はカートで確認できます。</p>
-      <div className="ko-cart-bar"><div><span><ShoppingBag size={17} /> {items.length}商品 <b>{totalQty}本</b></span><strong>{money(subtotal)}<small> 税抜小計</small></strong></div><button className="ko-button" disabled={!items.length} onClick={() => setSheet('cart')}>カートを見る <ChevronRight size={19} /></button></div>
+      <div className="ko-cart-bar"><div><span><ShoppingBag size={17} /> {items.length}商品 <b>{totalQty}本</b></span><strong>{subtotal == null || quoting ? '計算中…' : money(subtotal)}<small> 税抜小計</small></strong></div><button className="ko-button" disabled={!items.length} onClick={() => setSheet('cart')}>カートを見る <ChevronRight size={19} /></button></div>
     </>}
     {sheet === 'address' && <Modal title="配送先を選択" onClose={() => setSheet(addressReturn.current)}><p className="ko-muted">配送先に合わせて送料とお届け可能日を確認します。</p><div className="ko-address-options">{addresses.map((candidate) => <button key={candidate.id} className={`ko-address-option${addressId === candidate.id ? ' active' : ''}`} onClick={() => { if (candidate.id !== addressId) { setAddressId(candidate.id); setDesiredDate(''); setDates([]); setQuote(null); } setSheet(items.length ? 'cart' : addressReturn.current); }}><span className="ko-radio">{addressId === candidate.id && <span />}</span><span><strong>{addressName(candidate)} {candidate.is_default ? <em>既定</em> : null}</strong><small>〒{candidate.postal_code} {addressText(candidate)}</small><small>{candidate.phone}</small></span></button>)}</div><p className="ko-footnote">配送先の追加・変更は小島醸造へご依頼ください。</p></Modal>}
     {sheet === 'calendar' && <Modal title="到着希望日を選択" onClose={() => setSheet('cart')}>{dates.length ? <DeliveryDateCalendar dates={dates} selectedDate={desiredDate} onSelect={(date) => { setDesiredDate(date); setSheet('cart'); }} /> : <Empty icon={CalendarDays} title="現在選べる配送日がありません">小島醸造にお問い合わせください。</Empty>}</Modal>}
-    {sheet === 'cart' && <Modal title="カート" onClose={() => setSheet(null)}>{items.length ? <><div className="ko-cart-items">{items.map((item) => { const product = products.find((value) => value.id === item.product_id); return <div className="ko-cart-item" key={item.product_id}><div><strong>{product ? productName(product) : item.product_id}</strong><small>{product?.volume_ml || product?.capacity_ml}ml / {money(product?.unit_price)}（税抜）</small><button className="ko-remove" onClick={() => setQuantity(item.product_id, 0)}>削除</button></div><div><strong>{money(Number(product?.unit_price || 0) * item.quantity)}</strong><Quantity value={item.quantity} onChange={(value) => setQuantity(item.product_id, value)} /></div></div>; })}</div><button className="ko-sheet-address" onClick={() => openAddresses('cart')}><MapPin size={18} /><span>{addressName(address)}</span><small>変更</small><ChevronRight size={15} /></button>{quoting ? <Loading label="送料と合計を計算しています" /> : quote && <QuoteSummary quote={quote} />}{quoteError && <InlineError message={quoteError} />}<label className="ko-label">到着希望日 <em>必須</em></label><button className={`ko-date-select${!desiredDate ? ' placeholder' : ''}`} onClick={() => setSheet('calendar')}><CalendarDays size={20} /><span>{desiredDate ? formatDate(desiredDate) : 'お届け可能日から選択してください'}</span><ChevronRight size={18} /></button><label className="ko-label" htmlFor="ko-note">ご要望・備考 <small>任意</small></label><textarea id="ko-note" value={note} onChange={(event) => setNote(event.target.value)} maxLength={2000} placeholder="お届けについてのご要望など" rows={2} /><button className="ko-button" disabled={!desiredDate || !quote || quoting || !!quoteError} onClick={confirm}>{orderId ? '変更内容を確認する' : '注文内容を確認する'} <ArrowRight size={18} /></button></> : <Empty title="カートは空です">商品一覧から商品をお選びください。</Empty>}</Modal>}
+    {sheet === 'cart' && <Modal title="カート" onClose={() => setSheet(null)}>{items.length ? <><div className="ko-cart-items">{items.map((item) => { const product = quotedProduct(item.product_id); return <div className="ko-cart-item" key={item.product_id}><div><strong>{product ? productName(product) : item.product_id}</strong><small>{product?.volume_ml || product?.capacity_ml}ml / {product ? money(product.unit_price) : '計算中…'}（税抜）</small><button className="ko-remove" onClick={() => setQuantity(item.product_id, 0)}>削除</button></div><div><strong>{product ? money(Number(product.unit_price) * item.quantity) : '計算中…'}</strong><Quantity value={item.quantity} onChange={(value) => setQuantity(item.product_id, value)} /></div></div>; })}</div><button className="ko-sheet-address" onClick={() => openAddresses('cart')}><MapPin size={18} /><span>{addressName(address)}</span><small>変更</small><ChevronRight size={15} /></button>{quoting || !currentQuote ? <Loading label="送料と合計を計算しています" /> : <QuoteSummary quote={currentQuote} />}{quoteError && <InlineError message={quoteError} />}<label className="ko-label">到着希望日 <em>必須</em></label><button className={`ko-date-select${!desiredDate ? ' placeholder' : ''}`} onClick={() => setSheet('calendar')}><CalendarDays size={20} /><span>{desiredDate ? formatDate(desiredDate) : 'お届け可能日から選択してください'}</span><ChevronRight size={18} /></button><label className="ko-label" htmlFor="ko-note">ご要望・備考 <small>任意</small></label><textarea id="ko-note" value={note} onChange={(event) => setNote(event.target.value)} maxLength={2000} placeholder="お届けについてのご要望など" rows={2} /><button className="ko-button" disabled={!desiredDate || !quoteUsable} onClick={confirm}>{orderId ? '変更内容を確認する' : '注文内容を確認する'} <ArrowRight size={18} /></button></> : <Empty title="カートは空です">商品一覧から商品をお選びください。</Empty>}</Modal>}
   </div>;
 }
 
@@ -490,8 +584,9 @@ function PendingRegistration() {
     (async () => {
       try {
         const credentials = lineCredentials(); if (!credentials) throw new Error(lineCredentialError);
-        await api('/api/auth/line', { method: 'POST', body: JSON.stringify(credentials) });
-        await refresh(); navigate('/order', { replace: true });
+        const verified = await api('/api/auth/line', { method: 'POST', body: JSON.stringify(credentials) });
+        if (verified?.actor?.type !== 'customer' || verified.actor.company_id !== handoff.value?.company_id) throw new Error('登録先とログイン中のお取引先が一致しません。招待QRから確認し直してください。');
+        await refresh(verified.actor); navigate('/order', { replace: true });
       } catch (error) { setError((error as Error).message); }
       finally { setBusy(false); }
     })();
@@ -501,9 +596,18 @@ function PendingRegistration() {
     setBusy(true); setError(null);
     try {
       const credentials = lineCredentials(); if (!credentials) throw new Error(lineCredentialError);
-      await api('/api/public/invitations/register-pending', { method: 'POST', body: JSON.stringify({ handoff_id: handoff.value.handoff_id, staff_name: staffName.trim(), ...credentials }) });
-      await refresh(); navigate('/order', { replace: true, state: { notice: 'ご担当者の登録が完了しました。ご注文いただけます。' } });
-    } catch (error) { setError((error as Error).message); }
+      const registered = await api('/api/public/invitations/register-pending', { method: 'POST', body: JSON.stringify({ handoff_id: handoff.value.handoff_id, staff_name: staffName.trim(), ...credentials }) });
+      if (registered?.actor?.company_id !== handoff.value.company_id) throw new Error('登録先とログイン中のお取引先が一致しません。招待QRから確認し直してください。');
+      await refresh(registered.actor); navigate('/order', { replace: true, state: { notice: 'ご担当者の登録が完了しました。ご注文いただけます。' } });
+    } catch (error) {
+      try {
+        const credentials = lineCredentials(); if (!credentials) throw new Error(lineCredentialError);
+        const verified = await api('/api/auth/line', { method: 'POST', body: JSON.stringify(credentials) });
+        const expectedCompany = handoff.value?.company_id;
+        if (!expectedCompany || verified?.actor?.type !== 'customer' || verified.actor.company_id !== expectedCompany) { setError('登録先とログイン中のお取引先が一致しません。招待QRから確認し直してください。'); return; }
+        await refresh(verified.actor); navigate('/order', { replace: true, state: { notice: 'ご担当者の登録を確認しました。ご注文いただけます。' } });
+      } catch { setError((error as Error).message); }
+    }
     finally { setBusy(false); }
   };
   if (authLoading || busy && handoff.value?.already_registered) return <Loading label="ご利用状況を確認しています" />;
@@ -533,7 +637,7 @@ function LegacyInvite() {
   useEffect(() => { if (!authLoading && !loading && (alreadyRegistered || (actor?.type === 'customer' && companyId && actor.company_id === companyId)) && !registered) navigate('/order', { replace: true, state: { notice: `すでに${companyName}として登録済みです` } }); }, [actor, authLoading, loading, companyId, companyName, navigate, registered, alreadyRegistered]);
   const register = async () => {
     if (!staffName.trim() || busy || !token) return; setBusy(true); setSubmitError(null); setCanRetryLineAuth(false);
-    try { const credentials = lineCredentials(); if (!credentials) throw new Error(lineCredentialError); await api('/api/public/invitations/register', { method: 'POST', body: JSON.stringify({ token, staff_name: staffName.trim(), ...credentials }) }); setRegistered(true); await refresh(); navigate(`/invite/complete?t=${encodeURIComponent(token)}`, { replace: true }); }
+    try { const credentials = lineCredentials(); if (!credentials) throw new Error(lineCredentialError); const result = await api('/api/public/invitations/register', { method: 'POST', body: JSON.stringify({ token, staff_name: staffName.trim(), ...credentials }) }); if (result?.actor?.company_id !== companyId) throw new Error('登録先のお取引先を確認できませんでした。'); setRegistered(true); await refresh(result.actor); navigate(`/invite/complete?t=${encodeURIComponent(token)}`, { replace: true }); }
     catch (err) { setSubmitError((err as Error).message); setCanRetryLineAuth((err instanceof ApiError && [401,403].includes(err.status)) || (err as Error).message === lineCredentialError); } finally { setBusy(false); }
   };
   if (loading || authLoading) return <Loading label="招待内容を確認しています" />;
